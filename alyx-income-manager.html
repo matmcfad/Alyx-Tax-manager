@@ -1,0 +1,2122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alyx Steadman Therapy PLLC - Income Manager</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@3.0.0/index.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+        .number-mono {
+            font-variant-numeric: tabular-nums;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // ============================================================================
+        // CONSTANTS
+        // ============================================================================
+
+        const TAX_BRACKETS_2024 = [
+            { min: 0, max: 11600, rate: 0.10, base: 0 },
+            { min: 11600, max: 47150, rate: 0.12, base: 1160 },
+            { min: 47150, max: 100525, rate: 0.22, base: 5426 },
+            { min: 100525, max: 191950, rate: 0.24, base: 17168.5 },
+            { min: 191950, max: 243725, rate: 0.32, base: 39110.5 },
+            { min: 243725, max: 609350, rate: 0.35, base: 55678.5 },
+            { min: 609350, max: Infinity, rate: 0.37, base: 183647.25 }
+        ];
+
+        const QUARTERLY_DUE_DATES = [
+            { quarter: "Q1 2025", period: "Jan 1 - Mar 31", due: "2025-04-15", amount: 6416 },
+            { quarter: "Q2 2025", period: "Apr 1 - May 31", due: "2025-06-15", amount: 6416 },
+            { quarter: "Q3 2025", period: "Jun 1 - Aug 31", due: "2025-09-15", amount: 6416 },
+            { quarter: "Q4 2025", period: "Sep 1 - Dec 31", due: "2026-01-15", amount: 6416 }
+        ];
+
+        const DEFAULT_SETTINGS = {
+            tax2024Total: 25664,
+            quarterlyPayment: 6416,
+            standardDeduction: 14600,
+            minimumCushion: 1000,
+            startingCheckingBalance: 1200,
+            startingTaxSavingsBalance: 0,
+            startDate: "2025-01-01",
+            currentYear: 2025,
+            taxSavingsRate: 0.30,
+            businessName: "Alyx Steadman Therapy PLLC"
+        };
+
+        const STORAGE_KEY = "alyxIncomeManager";
+        const STORAGE_VERSION = "1.0";
+
+        // ============================================================================
+        // TAX CALCULATION FUNCTIONS
+        // ============================================================================
+
+        /**
+         * Calculate self-employment tax
+         * @param {number} netIncome - Net income after business expenses
+         * @returns {object} { seTax, seTaxDeduction }
+         */
+        function calculateSelfEmploymentTax(netIncome) {
+            const seTaxBase = netIncome * 0.9235;
+            const seTax = seTaxBase * 0.153; // 15.3% (12.4% SS + 2.9% Medicare)
+            const seTaxDeduction = seTax * 0.5; // Deduct half of SE tax
+            return { seTax, seTaxDeduction, seTaxBase };
+        }
+
+        /**
+         * Calculate income tax using 2024 tax brackets (single filer)
+         * @param {number} netIncome - Net income after business expenses
+         * @param {number} seTaxDeduction - Half of self-employment tax
+         * @param {number} standardDeduction - Standard deduction amount
+         * @returns {object} { incomeTax, taxableIncome, adjustedIncome }
+         */
+        function calculateIncomeTax(netIncome, seTaxDeduction, standardDeduction = 14600) {
+            const adjustedIncome = netIncome - seTaxDeduction;
+            const taxableIncome = Math.max(0, adjustedIncome - standardDeduction);
+
+            let incomeTax = 0;
+            let bracketDetails = [];
+
+            for (const bracket of TAX_BRACKETS_2024) {
+                if (taxableIncome <= bracket.min) break;
+
+                const taxableInBracket = Math.min(taxableIncome, bracket.max) - bracket.min;
+                const taxFromBracket = taxableInBracket * bracket.rate;
+
+                if (taxableInBracket > 0) {
+                    bracketDetails.push({
+                        min: bracket.min,
+                        max: bracket.max,
+                        rate: bracket.rate,
+                        taxableAmount: taxableInBracket,
+                        tax: taxFromBracket
+                    });
+                    incomeTax += taxFromBracket;
+                }
+            }
+
+            // Add the base from the appropriate bracket
+            for (const bracket of TAX_BRACKETS_2024) {
+                if (taxableIncome > bracket.min && taxableIncome <= bracket.max) {
+                    incomeTax = bracket.base + (taxableIncome - bracket.min) * bracket.rate;
+                    break;
+                }
+            }
+
+            return { incomeTax, taxableIncome, adjustedIncome, bracketDetails };
+        }
+
+        /**
+         * Calculate total tax liability
+         * @param {number} netIncome - Net income after business expenses
+         * @param {number} standardDeduction - Standard deduction amount
+         * @returns {object} Complete tax calculation breakdown
+         */
+        function calculateTotalTax(netIncome, standardDeduction = 14600) {
+            const { seTax, seTaxDeduction, seTaxBase } = calculateSelfEmploymentTax(netIncome);
+            const { incomeTax, taxableIncome, adjustedIncome, bracketDetails } =
+                calculateIncomeTax(netIncome, seTaxDeduction, standardDeduction);
+
+            return {
+                netIncome,
+                seTax,
+                seTaxDeduction,
+                seTaxBase,
+                incomeTax,
+                taxableIncome,
+                adjustedIncome,
+                totalTax: seTax + incomeTax,
+                bracketDetails
+            };
+        }
+
+        // ============================================================================
+        // DATE HELPER FUNCTIONS
+        // ============================================================================
+
+        /**
+         * Get ISO week number for a date
+         */
+        function getWeekNumber(date) {
+            const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+            const dayNum = d.getUTCDay() || 7;
+            d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+            const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+            return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+        }
+
+        /**
+         * Get Friday of a specific week
+         */
+        function getFridayOfWeek(weekNumber, year) {
+            const jan4 = new Date(year, 0, 4);
+            const jan4Day = jan4.getDay() || 7;
+            const weekStart = new Date(year, 0, 4 - jan4Day + 1 + (weekNumber - 1) * 7);
+            const friday = new Date(weekStart);
+            friday.setDate(weekStart.getDate() + 4);
+            return friday;
+        }
+
+        /**
+         * Get current week number
+         */
+        function getCurrentWeek() {
+            return getWeekNumber(new Date());
+        }
+
+        /**
+         * Format date as readable string
+         */
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        /**
+         * Get days until a date
+         */
+        function getDaysUntil(dateString) {
+            const target = new Date(dateString);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            target.setHours(0, 0, 0, 0);
+            const diff = target - today;
+            return Math.ceil(diff / (1000 * 60 * 60 * 24));
+        }
+
+        // ============================================================================
+        // EXPENSE CALCULATION FUNCTIONS
+        // ============================================================================
+
+        /**
+         * Calculate bills due in the next N days
+         */
+        function calculateUpcomingBills(currentDate, expenseBudget, dueDates, daysAhead = 14) {
+            if (!expenseBudget || !dueDates) return [];
+
+            const today = new Date(currentDate);
+            const endDate = new Date(today);
+            endDate.setDate(endDate.getDate() + daysAhead);
+
+            const upcomingBills = [];
+            const currentMonth = today.getMonth();
+            const currentYear = today.getFullYear();
+
+            // Check current month and next month
+            for (let monthOffset = 0; monthOffset <= 1; monthOffset++) {
+                const checkMonth = (currentMonth + monthOffset) % 12;
+                const checkYear = currentMonth + monthOffset >= 12 ? currentYear + 1 : currentYear;
+
+                for (const [expense, dueDay] of Object.entries(dueDates)) {
+                    if (!expenseBudget[expense]) continue;
+
+                    const dueDate = new Date(checkYear, checkMonth, dueDay);
+
+                    if (dueDate >= today && dueDate <= endDate) {
+                        const amount = expenseBudget[expense][checkMonth] || 0;
+                        if (amount > 0) {
+                            upcomingBills.push({
+                                expense,
+                                amount,
+                                dueDate: dueDate.toISOString().split('T')[0],
+                                dueDateFormatted: formatDate(dueDate.toISOString())
+                            });
+                        }
+                    }
+                }
+            }
+
+            return upcomingBills.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+        }
+
+        /**
+         * Calculate business reserve needed
+         */
+        function calculateBusinessReserve(currentBalance, upcomingBills, minimumCushion) {
+            const totalUpcoming = upcomingBills.reduce((sum, bill) => sum + bill.amount, 0);
+            const targetBalance = Math.max(totalUpcoming, minimumCushion);
+            const reserveNeeded = Math.max(0, targetBalance - currentBalance);
+
+            return {
+                currentBalance,
+                upcomingBills,
+                totalUpcoming,
+                targetBalance,
+                reserveNeeded
+            };
+        }
+
+        // ============================================================================
+        // LOCAL STORAGE FUNCTIONS
+        // ============================================================================
+
+        function saveToLocalStorage(data) {
+            try {
+                const saveData = {
+                    version: STORAGE_VERSION,
+                    timestamp: new Date().toISOString(),
+                    ...data
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(saveData));
+                return true;
+            } catch (error) {
+                console.error('Error saving to localStorage:', error);
+                return false;
+            }
+        }
+
+        function loadFromLocalStorage() {
+            try {
+                const data = localStorage.getItem(STORAGE_KEY);
+                if (!data) return null;
+                return JSON.parse(data);
+            } catch (error) {
+                console.error('Error loading from localStorage:', error);
+                return null;
+            }
+        }
+
+        function exportToJSON() {
+            const data = loadFromLocalStorage();
+            if (!data) return null;
+
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `alyx-income-manager-backup-${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // ============================================================================
+        // CSV FUNCTIONS
+        // ============================================================================
+
+        function parseExpenseCSV(csvText) {
+            return new Promise((resolve, reject) => {
+                Papa.parse(csvText, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: (results) => {
+                        try {
+                            const budget = {};
+                            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+                            results.data.forEach(row => {
+                                const expenseName = row.Expense;
+                                if (!expenseName) return;
+
+                                budget[expenseName] = months.map(month => {
+                                    const value = parseFloat(row[month] || 0);
+                                    return isNaN(value) ? 0 : value;
+                                });
+                            });
+
+                            resolve(budget);
+                        } catch (error) {
+                            reject(error);
+                        }
+                    },
+                    error: (error) => {
+                        reject(error);
+                    }
+                });
+            });
+        }
+
+        function exportWeeksToCSV(weeks) {
+            const headers = ['Week', 'Date', 'Income', 'Business', 'Tax', 'Paycheck', 'Notes'];
+            const rows = weeks
+                .filter(w => w.income !== null)
+                .map(w => [
+                    w.week,
+                    w.date,
+                    w.income?.toFixed(2) || '0.00',
+                    w.business?.toFixed(2) || '0.00',
+                    w.tax?.toFixed(2) || '0.00',
+                    w.paycheck?.toFixed(2) || '0.00',
+                    w.notes || ''
+                ]);
+
+            const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `alyx-income-history-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function generateExpenseTemplate() {
+            const template = `Expense,Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec
+SimplePractice,87,87,87,87,87,87,87,87,87,87,87,87
+Rent,410,410,410,410,410,410,410,410,410,410,410,410
+Phone,123,123,123,123,123,123,123,123,123,123,123,123
+Internet,55,55,93,222,93,93,93,93,108,143,108,108
+Supervision,360,360,425,510,425,425,350,350,350,870,870,870
+Books,10,10,10,10,10,10,10,10,10,10,10,10
+Trainings,600,75,75,75,75,75,75,75,75,75,75,75
+Insurance,0,0,0,0,292,0,0,0,0,0,0,0
+License,0,0,0,0,0,95,0,41,0,0,0,200`;
+
+            const blob = new Blob([template], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'expense-budget-template.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // ============================================================================
+        // MAIN APP COMPONENT
+        // ============================================================================
+
+        function App() {
+            const [currentScreen, setCurrentScreen] = useState('dashboard');
+            const [appData, setAppData] = useState(null);
+            const [isSetupComplete, setIsSetupComplete] = useState(false);
+            const [setupStep, setSetupStep] = useState(1);
+
+            // Initialize app data
+            useEffect(() => {
+                const savedData = loadFromLocalStorage();
+
+                if (savedData && savedData.settings && savedData.settings.setupComplete) {
+                    setAppData(savedData);
+                    setIsSetupComplete(true);
+                } else {
+                    // Initialize with default data
+                    const initialData = {
+                        settings: { ...DEFAULT_SETTINGS, setupComplete: false },
+                        expenses: {
+                            budget: {},
+                            dueDates: {}
+                        },
+                        weeks: Array.from({ length: 52 }, (_, i) => ({
+                            week: i + 1,
+                            date: getFridayOfWeek(i + 1, 2025).toISOString().split('T')[0],
+                            income: null,
+                            business: null,
+                            tax: null,
+                            paycheck: null,
+                            notes: '',
+                            status: 'pending'
+                        })),
+                        quarterlyPayments: QUARTERLY_DUE_DATES.map(q => ({ ...q, paid: false, datePaid: null })),
+                        businessTransactions: [],
+                        taxTransactions: []
+                    };
+                    setAppData(initialData);
+                    setIsSetupComplete(false);
+                }
+            }, []);
+
+            // Save data whenever it changes
+            useEffect(() => {
+                if (appData) {
+                    saveToLocalStorage(appData);
+                }
+            }, [appData]);
+
+            const updateSettings = (newSettings) => {
+                setAppData(prev => ({
+                    ...prev,
+                    settings: { ...prev.settings, ...newSettings }
+                }));
+            };
+
+            const updateWeek = (weekNumber, weekData) => {
+                setAppData(prev => ({
+                    ...prev,
+                    weeks: prev.weeks.map(w =>
+                        w.week === weekNumber ? { ...w, ...weekData, status: 'completed' } : w
+                    )
+                }));
+            };
+
+            const updateQuarterlyPayment = (quarter, paid, datePaid = null) => {
+                setAppData(prev => ({
+                    ...prev,
+                    quarterlyPayments: prev.quarterlyPayments.map(q =>
+                        q.quarter === quarter ? { ...q, paid, datePaid } : q
+                    )
+                }));
+            };
+
+            const updateExpenses = (budget, dueDates) => {
+                setAppData(prev => ({
+                    ...prev,
+                    expenses: { budget, dueDates }
+                }));
+            };
+
+            if (!appData) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center">
+                        <div className="text-xl text-gray-600">Loading...</div>
+                    </div>
+                );
+            }
+
+            if (!isSetupComplete) {
+                return (
+                    <SetupFlow
+                        appData={appData}
+                        setAppData={setAppData}
+                        setupStep={setupStep}
+                        setSetupStep={setSetupStep}
+                        onComplete={() => {
+                            updateSettings({ setupComplete: true });
+                            setIsSetupComplete(true);
+                        }}
+                    />
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-gray-50">
+                    <Navigation currentScreen={currentScreen} setCurrentScreen={setCurrentScreen} />
+
+                    <div className="container mx-auto px-4 py-6 max-w-4xl">
+                        {currentScreen === 'dashboard' && (
+                            <Dashboard appData={appData} updateWeek={updateWeek} updateSettings={updateSettings} />
+                        )}
+                        {currentScreen === 'history' && (
+                            <History appData={appData} updateWeek={updateWeek} />
+                        )}
+                        {currentScreen === 'taxes' && (
+                            <Taxes appData={appData} updateQuarterlyPayment={updateQuarterlyPayment} />
+                        )}
+                        {currentScreen === 'expenses' && (
+                            <Expenses appData={appData} updateExpenses={updateExpenses} updateSettings={updateSettings} />
+                        )}
+                        {currentScreen === 'settings' && (
+                            <Settings appData={appData} updateSettings={updateSettings} setAppData={setAppData} />
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // ============================================================================
+        // NAVIGATION COMPONENT
+        // ============================================================================
+
+        function Navigation({ currentScreen, setCurrentScreen }) {
+            const navItems = [
+                { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+                { id: 'history', label: 'History', icon: '📅' },
+                { id: 'taxes', label: 'Taxes', icon: '💰' },
+                { id: 'expenses', label: 'Expenses', icon: '🏢' },
+                { id: 'settings', label: 'Settings', icon: '⚙️' }
+            ];
+
+            return (
+                <nav className="bg-white shadow-md sticky top-0 z-50">
+                    <div className="container mx-auto px-4">
+                        <div className="flex space-x-1 overflow-x-auto">
+                            {navItems.map(item => (
+                                <button
+                                    key={item.id}
+                                    onClick={() => setCurrentScreen(item.id)}
+                                    className={`px-4 py-3 whitespace-nowrap font-medium transition-colors ${
+                                        currentScreen === item.id
+                                            ? 'text-blue-600 border-b-2 border-blue-600'
+                                            : 'text-gray-600 hover:text-blue-600'
+                                    }`}
+                                >
+                                    <span className="mr-2">{item.icon}</span>
+                                    {item.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </nav>
+            );
+        }
+
+        // ============================================================================
+        // SETUP FLOW COMPONENT
+        // ============================================================================
+
+        function SetupFlow({ appData, setAppData, setupStep, setSetupStep, onComplete }) {
+            const [tax2024, setTax2024] = useState(appData.settings.tax2024Total);
+            const [csvFile, setCsvFile] = useState(null);
+            const [dueDates, setDueDates] = useState({});
+            const [startingChecking, setStartingChecking] = useState(appData.settings.startingCheckingBalance);
+            const [startingTaxSavings, setStartingTaxSavings] = useState(appData.settings.startingTaxSavingsBalance);
+            const [minimumCushion, setMinimumCushion] = useState(appData.settings.minimumCushion);
+
+            const handleCsvUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const text = await file.text();
+                try {
+                    const budget = await parseExpenseCSV(text);
+                    setCsvFile(budget);
+
+                    // Initialize due dates for each expense
+                    const initialDueDates = {};
+                    Object.keys(budget).forEach(expense => {
+                        initialDueDates[expense] = 1;
+                    });
+                    setDueDates(initialDueDates);
+                } catch (error) {
+                    alert('Error parsing CSV file. Please check the format.');
+                }
+            };
+
+            const handleFinishSetup = () => {
+                setAppData(prev => ({
+                    ...prev,
+                    settings: {
+                        ...prev.settings,
+                        tax2024Total: tax2024,
+                        quarterlyPayment: Math.round(tax2024 / 4),
+                        startingCheckingBalance: startingChecking,
+                        startingTaxSavingsBalance: startingTaxSavings,
+                        minimumCushion: minimumCushion
+                    },
+                    expenses: {
+                        budget: csvFile || {},
+                        dueDates: dueDates
+                    }
+                }));
+                onComplete();
+            };
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-lg shadow-xl p-8 max-w-2xl w-full">
+                        {setupStep === 1 && (
+                            <div>
+                                <h1 className="text-3xl font-bold text-gray-800 mb-4">
+                                    Welcome to {appData.settings.businessName}
+                                </h1>
+                                <h2 className="text-xl text-gray-600 mb-6">Income Manager</h2>
+                                <p className="text-gray-700 mb-8">
+                                    Let's set up your account. This will take about 5 minutes.
+                                </p>
+                                <button
+                                    onClick={() => setSetupStep(2)}
+                                    className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                                >
+                                    Get Started
+                                </button>
+                            </div>
+                        )}
+
+                        {setupStep === 2 && (
+                            <div>
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">Step 1: Tax Information</h2>
+                                <div className="mb-6">
+                                    <label className="block text-gray-700 mb-2 font-semibold">
+                                        What was your total 2024 tax?
+                                    </label>
+                                    <p className="text-sm text-gray-600 mb-4">
+                                        This is used to calculate quarterly estimated payments for 2025.
+                                    </p>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={tax2024}
+                                            onChange={(e) => setTax2024(parseFloat(e.target.value) || 0)}
+                                            className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                            placeholder="25664"
+                                        />
+                                    </div>
+                                    <p className="text-sm text-gray-500 mt-2">
+                                        Don't know? Check your 2024 tax return, Form 1040, Line 24.
+                                    </p>
+                                    <p className="text-sm text-blue-600 mt-2 font-semibold">
+                                        Your quarterly payment will be: ${Math.round(tax2024 / 4).toLocaleString()}
+                                    </p>
+                                </div>
+                                <div className="flex gap-4">
+                                    <button
+                                        onClick={() => setSetupStep(1)}
+                                        className="flex-1 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors"
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        onClick={() => setSetupStep(3)}
+                                        className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {setupStep === 3 && (
+                            <div>
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">Step 2: Expense Budget</h2>
+                                <div className="mb-6">
+                                    <p className="text-gray-700 mb-4">
+                                        Upload your monthly expense budget as a CSV file.
+                                    </p>
+                                    <div className="mb-4">
+                                        <input
+                                            type="file"
+                                            accept=".csv"
+                                            onChange={handleCsvUpload}
+                                            className="w-full p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-500 cursor-pointer"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={generateExpenseTemplate}
+                                        className="text-blue-600 hover:underline text-sm"
+                                    >
+                                        📥 Download Template First
+                                    </button>
+                                    {csvFile && (
+                                        <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+                                            <p className="text-green-700 font-semibold">
+                                                ✓ Budget uploaded successfully!
+                                            </p>
+                                            <p className="text-sm text-green-600 mt-1">
+                                                Found {Object.keys(csvFile).length} expense categories
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex gap-4">
+                                    <button
+                                        onClick={() => setSetupStep(2)}
+                                        className="flex-1 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors"
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        onClick={() => setSetupStep(4)}
+                                        className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        {csvFile ? 'Next' : 'Skip - I\'ll Do This Later'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {setupStep === 4 && csvFile && (
+                            <div>
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">Step 3: Bill Due Dates</h2>
+                                <p className="text-gray-700 mb-4">When are your bills due each month?</p>
+                                <div className="space-y-3 mb-6 max-h-96 overflow-y-auto">
+                                    {Object.keys(csvFile).map(expense => (
+                                        <div key={expense} className="flex items-center gap-4">
+                                            <label className="flex-1 text-gray-700">{expense}:</label>
+                                            <select
+                                                value={dueDates[expense] || 1}
+                                                onChange={(e) => setDueDates(prev => ({
+                                                    ...prev,
+                                                    [expense]: parseInt(e.target.value)
+                                                }))}
+                                                className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                            >
+                                                {Array.from({ length: 31 }, (_, i) => i + 1).map(day => (
+                                                    <option key={day} value={day}>
+                                                        {day}{day === 1 ? 'st' : day === 2 ? 'nd' : day === 3 ? 'rd' : 'th'}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <span className="text-gray-500">of month</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="flex gap-4">
+                                    <button
+                                        onClick={() => setSetupStep(3)}
+                                        className="flex-1 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors"
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        onClick={() => setSetupStep(5)}
+                                        className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {(setupStep === 4 && !csvFile) || setupStep === 5) && (
+                            <div>
+                                <h2 className="text-2xl font-bold text-gray-800 mb-6">
+                                    Step {csvFile ? '4' : '3'}: Starting Balances
+                                </h2>
+                                <div className="space-y-4 mb-6">
+                                    <div>
+                                        <label className="block text-gray-700 mb-2 font-semibold">
+                                            Business Checking Balance
+                                        </label>
+                                        <div className="relative">
+                                            <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                            <input
+                                                type="number"
+                                                value={startingChecking}
+                                                onChange={(e) => setStartingChecking(parseFloat(e.target.value) || 0)}
+                                                className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-gray-700 mb-2 font-semibold">
+                                            Tax Savings Balance
+                                        </label>
+                                        <div className="relative">
+                                            <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                            <input
+                                                type="number"
+                                                value={startingTaxSavings}
+                                                onChange={(e) => setStartingTaxSavings(parseFloat(e.target.value) || 0)}
+                                                className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-gray-700 mb-2 font-semibold">
+                                            Minimum Cushion to Maintain in Business Checking
+                                        </label>
+                                        <div className="relative">
+                                            <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                            <input
+                                                type="number"
+                                                value={minimumCushion}
+                                                onChange={(e) => setMinimumCushion(parseFloat(e.target.value) || 0)}
+                                                className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex gap-4">
+                                    <button
+                                        onClick={() => setSetupStep(csvFile ? 4 : 3)}
+                                        className="flex-1 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors"
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        onClick={() => setSetupStep(6)}
+                                        className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        Finish Setup
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {setupStep === 6 && (
+                            <div className="text-center">
+                                <div className="text-6xl mb-6">✅</div>
+                                <h2 className="text-2xl font-bold text-gray-800 mb-4">Setup Complete!</h2>
+                                <p className="text-gray-700 mb-8">
+                                    You're ready to start tracking your income and managing your business.
+                                </p>
+                                <button
+                                    onClick={handleFinishSetup}
+                                    className="w-full bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                                >
+                                    Go to Dashboard
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // ============================================================================
+        // DASHBOARD COMPONENT
+        // ============================================================================
+
+        function Dashboard({ appData, updateWeek, updateSettings }) {
+            const [weeklyIncome, setWeeklyIncome] = useState('');
+            const [showSplit, setShowSplit] = useState(false);
+            const [showBusinessDetails, setShowBusinessDetails] = useState(false);
+            const [showTaxDetails, setShowTaxDetails] = useState(false);
+            const [calculatedSplit, setCalculatedSplit] = useState(null);
+
+            const currentWeek = getCurrentWeek();
+            const currentWeekData = appData.weeks.find(w => w.week === currentWeek);
+
+            // Calculate YTD totals
+            const completedWeeks = appData.weeks.filter(w => w.income !== null);
+            const weeksElapsed = completedWeeks.length;
+            const ytdIncome = completedWeeks.reduce((sum, w) => sum + (w.income || 0), 0);
+            const ytdTaxSavings = completedWeeks.reduce((sum, w) => sum + (w.tax || 0), 0);
+            const ytdBusiness = completedWeeks.reduce((sum, w) => sum + (w.business || 0), 0);
+            const ytdPaychecks = completedWeeks.reduce((sum, w) => sum + (w.paycheck || 0), 0);
+
+            // Calculate current balances
+            const quarterlyPaid = appData.quarterlyPayments
+                .filter(q => q.paid)
+                .reduce((sum, q) => sum + q.amount, 0);
+            const taxSavingsBalance = appData.settings.startingTaxSavingsBalance + ytdTaxSavings - quarterlyPaid;
+            const businessCheckingBalance = appData.settings.startingCheckingBalance + ytdBusiness;
+
+            // Calculate projections
+            const averageWeekly = weeksElapsed > 0 ? ytdIncome / weeksElapsed : 0;
+            const projectedAnnual = averageWeekly * 52;
+            const projectedTax = calculateTotalTax(projectedAnnual, appData.settings.standardDeduction);
+
+            // Next quarterly payment
+            const nextQuarterly = appData.quarterlyPayments.find(q => !q.paid);
+            const daysUntilNext = nextQuarterly ? getDaysUntil(nextQuarterly.due) : null;
+
+            // Missing weeks
+            const missingWeeks = appData.weeks.filter(w =>
+                w.week < currentWeek && w.income === null
+            );
+
+            const handleCalculateSplit = () => {
+                const income = parseFloat(weeklyIncome);
+                if (isNaN(income) || income <= 0) {
+                    alert('Please enter a valid income amount');
+                    return;
+                }
+
+                // Calculate business reserve
+                const upcomingBills = calculateUpcomingBills(
+                    new Date(),
+                    appData.expenses.budget,
+                    appData.expenses.dueDates,
+                    14
+                );
+                const businessReserve = calculateBusinessReserve(
+                    businessCheckingBalance,
+                    upcomingBills,
+                    appData.settings.minimumCushion
+                );
+
+                // Calculate tax (30% rule)
+                const tax = income * appData.settings.taxSavingsRate;
+
+                // Calculate paycheck (what's left)
+                const business = Math.min(businessReserve.reserveNeeded, income * 0.5); // Cap at 50% of income
+                const paycheck = Math.max(0, income - business - tax);
+
+                setCalculatedSplit({
+                    income,
+                    business,
+                    tax,
+                    paycheck,
+                    businessReserve
+                });
+                setShowSplit(true);
+            };
+
+            const handleRecordWeek = () => {
+                if (!calculatedSplit) return;
+
+                updateWeek(currentWeek, {
+                    income: calculatedSplit.income,
+                    business: calculatedSplit.business,
+                    tax: calculatedSplit.tax,
+                    paycheck: calculatedSplit.paycheck
+                });
+
+                setWeeklyIncome('');
+                setShowSplit(false);
+                setCalculatedSplit(null);
+
+                alert('Week recorded successfully! 🎉');
+            };
+
+            return (
+                <div className="space-y-6">
+                    {/* Header */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h1 className="text-2xl font-bold text-gray-800">{appData.settings.businessName}</h1>
+                        <p className="text-gray-600">Week {currentWeek} of 52 ({formatDate(currentWeekData.date)})</p>
+                    </div>
+
+                    {/* Missing Weeks Alert */}
+                    {missingWeeks.length > 0 && (
+                        <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6">
+                            <h3 className="text-lg font-bold text-yellow-800 mb-2">⚠️ MISSING INCOME DATA</h3>
+                            <p className="text-yellow-700 mb-3">You haven't entered income for:</p>
+                            <ul className="list-disc list-inside text-yellow-700 mb-4">
+                                {missingWeeks.slice(0, 5).map(w => (
+                                    <li key={w.week}>Week {w.week} ({formatDate(w.date)})</li>
+                                ))}
+                                {missingWeeks.length > 5 && (
+                                    <li>... and {missingWeeks.length - 5} more</li>
+                                )}
+                            </ul>
+                            <button className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 transition-colors">
+                                Enter Missing Weeks
+                            </button>
+                        </div>
+                    )}
+
+                    {/* YTD Summary */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">💰 YEAR TO DATE SUMMARY</h2>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div>
+                                <div className="text-sm text-gray-600">Total Income</div>
+                                <div className="text-2xl font-bold text-gray-800 number-mono">
+                                    ${ytdIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600">Tax Savings</div>
+                                <div className="text-2xl font-bold text-green-600 number-mono">
+                                    ${taxSavingsBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600">Business Checking</div>
+                                <div className="text-2xl font-bold text-blue-600 number-mono">
+                                    ${businessCheckingBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600">Paid to Self</div>
+                                <div className="text-2xl font-bold text-purple-600 number-mono">
+                                    ${ytdPaychecks.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Quarterly Tax Status */}
+                    {nextQuarterly && (
+                        <div className="bg-white rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">📅 QUARTERLY TAX STATUS</h2>
+                            <div className="space-y-3">
+                                <div>
+                                    <span className="text-gray-600">Next Payment: </span>
+                                    <span className="font-semibold">{nextQuarterly.quarter}</span>
+                                </div>
+                                <div>
+                                    <span className="text-gray-600">Due: </span>
+                                    <span className="font-semibold">{formatDate(nextQuarterly.due)}</span>
+                                    <span className="text-sm text-gray-500 ml-2">({daysUntilNext} days)</span>
+                                </div>
+                                <div>
+                                    <span className="text-gray-600">Amount: </span>
+                                    <span className="font-semibold number-mono">
+                                        ${nextQuarterly.amount.toLocaleString()}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span className="text-gray-600">Currently Saved: </span>
+                                    <span className={`font-semibold number-mono ${
+                                        taxSavingsBalance >= nextQuarterly.amount ? 'text-green-600' : 'text-red-600'
+                                    }`}>
+                                        ${taxSavingsBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                        {taxSavingsBalance >= nextQuarterly.amount && ' ✓'}
+                                    </span>
+                                </div>
+                                <div className={`mt-4 p-3 rounded-lg ${
+                                    taxSavingsBalance >= nextQuarterly.amount
+                                        ? 'bg-green-50 text-green-700'
+                                        : 'bg-yellow-50 text-yellow-700'
+                                }`}>
+                                    <strong>Status: </strong>
+                                    {taxSavingsBalance >= nextQuarterly.amount
+                                        ? 'COVERED ✓'
+                                        : `Need $${(nextQuarterly.amount - taxSavingsBalance).toLocaleString()} more`
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Year-End Tax Projection */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">⚠️ YEAR-END TAX PROJECTION</h2>
+                        <div className="space-y-3">
+                            <div>
+                                <span className="text-gray-600">Based on current pace: </span>
+                                <span className="font-semibold number-mono">
+                                    ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}/year
+                                </span>
+                            </div>
+                            <div>
+                                <span className="text-gray-600">Projected 2025 tax: </span>
+                                <span className="font-semibold number-mono">
+                                    ~${projectedTax.totalTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                            <div>
+                                <span className="text-gray-600">Quarterly payments: </span>
+                                <span className="font-semibold number-mono">
+                                    ${appData.settings.tax2024Total.toLocaleString()}
+                                </span>
+                            </div>
+                            <div>
+                                <span className="text-gray-600">Additional needed: </span>
+                                <span className={`font-semibold number-mono ${
+                                    projectedTax.totalTax > appData.settings.tax2024Total ? 'text-red-600' : 'text-green-600'
+                                }`}>
+                                    ~${Math.max(0, projectedTax.totalTax - appData.settings.tax2024Total).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                            <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                                <p className="text-blue-800">
+                                    Don't worry - keep saving {(appData.settings.taxSavingsRate * 100).toFixed(0)}% each week and you'll catch up!
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Enter Weekly Income */}
+                    {!showSplit && currentWeekData.income === null && (
+                        <div className="bg-white rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">💵 ENTER THIS WEEK'S INCOME</h2>
+                            <p className="text-gray-600 mb-4">
+                                Week {currentWeek} ending Friday, {formatDate(currentWeekData.date)}
+                            </p>
+                            <div className="flex gap-4">
+                                <div className="flex-1">
+                                    <label className="block text-gray-700 mb-2">Income received:</label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={weeklyIncome}
+                                            onChange={(e) => setWeeklyIncome(e.target.value)}
+                                            onKeyPress={(e) => e.key === 'Enter' && handleCalculateSplit()}
+                                            className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
+                                            placeholder="2850.00"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex items-end">
+                                    <button
+                                        onClick={handleCalculateSplit}
+                                        className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                                    >
+                                        Calculate My Split
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Show Split */}
+                    {showSplit && calculatedSplit && (
+                        <div className="bg-white rounded-lg shadow-md p-6 border-2 border-blue-500">
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">HERE'S YOUR SPLIT FOR THIS WEEK</h2>
+
+                            <div className="mb-6">
+                                <div className="text-gray-600">💰 Income Received:</div>
+                                <div className="text-3xl font-bold text-gray-800 number-mono">
+                                    ${calculatedSplit.income.toFixed(2)}
+                                </div>
+                            </div>
+
+                            <div className="border-t-2 border-b-2 border-gray-200 py-6 space-y-4">
+                                {/* Business Expenses */}
+                                <div>
+                                    <div className="flex justify-between items-start mb-2">
+                                        <div>
+                                            <div className="text-lg font-semibold text-gray-800">
+                                                🏢 Business Expenses:
+                                                <span className="ml-2 number-mono">${calculatedSplit.business.toFixed(2)}</span>
+                                            </div>
+                                            <div className="text-sm text-gray-600">Reserve for upcoming bills</div>
+                                        </div>
+                                        <button
+                                            onClick={() => setShowBusinessDetails(!showBusinessDetails)}
+                                            className="text-blue-600 hover:underline text-sm"
+                                        >
+                                            {showBusinessDetails ? 'Hide Details ▲' : 'Show Details ▼'}
+                                        </button>
+                                    </div>
+
+                                    {showBusinessDetails && calculatedSplit.businessReserve && (
+                                        <div className="mt-3 p-4 bg-gray-50 rounded-lg text-sm">
+                                            <div className="space-y-2">
+                                                <div>
+                                                    <span className="text-gray-600">Current checking balance:</span>
+                                                    <span className="ml-2 font-semibold number-mono">
+                                                        ${businessCheckingBalance.toFixed(2)}
+                                                    </span>
+                                                </div>
+                                                <div>
+                                                    <span className="text-gray-600">Minimum cushion target:</span>
+                                                    <span className="ml-2 font-semibold number-mono">
+                                                        ${appData.settings.minimumCushion.toFixed(2)}
+                                                    </span>
+                                                </div>
+                                                <div className="mt-3">
+                                                    <div className="font-semibold text-gray-700 mb-2">Bills due in next 2 weeks:</div>
+                                                    {calculatedSplit.businessReserve.upcomingBills.map((bill, i) => (
+                                                        <div key={i} className="ml-4 text-gray-600">
+                                                            • {bill.dueDateFormatted} - {bill.expense}: ${bill.amount.toFixed(2)}
+                                                        </div>
+                                                    ))}
+                                                    <div className="mt-2 font-semibold">
+                                                        Total upcoming: ${calculatedSplit.businessReserve.totalUpcoming.toFixed(2)}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Tax Savings */}
+                                <div>
+                                    <div className="flex justify-between items-start mb-2">
+                                        <div>
+                                            <div className="text-lg font-semibold text-gray-800">
+                                                💾 Tax Savings ({(appData.settings.taxSavingsRate * 100).toFixed(0)}%):
+                                                <span className="ml-2 number-mono">${calculatedSplit.tax.toFixed(2)}</span>
+                                            </div>
+                                            <div className="text-sm text-gray-600">For quarterly payments + year-end</div>
+                                        </div>
+                                        <button
+                                            onClick={() => setShowTaxDetails(!showTaxDetails)}
+                                            className="text-blue-600 hover:underline text-sm"
+                                        >
+                                            {showTaxDetails ? 'Hide Details ▲' : 'Show Details ▼'}
+                                        </button>
+                                    </div>
+
+                                    {showTaxDetails && (
+                                        <div className="mt-3 p-4 bg-gray-50 rounded-lg text-sm">
+                                            <div className="space-y-2">
+                                                <div className="font-semibold text-gray-700">Simple rule: Save {(appData.settings.taxSavingsRate * 100).toFixed(0)}% of all income</div>
+                                                <div>
+                                                    This week: ${calculatedSplit.income.toFixed(2)} × {appData.settings.taxSavingsRate} = ${calculatedSplit.tax.toFixed(2)}
+                                                </div>
+                                                <div className="mt-3">
+                                                    <div className="font-semibold text-gray-700 mb-1">WHY {(appData.settings.taxSavingsRate * 100).toFixed(0)}%?</div>
+                                                    <div>• Self-employment tax: ~15.3%</div>
+                                                    <div>• Income tax: ~12-22% (your bracket)</div>
+                                                    <div>• Total: ~{(appData.settings.taxSavingsRate * 100).toFixed(0)}% average</div>
+                                                </div>
+                                                <div className="mt-3">
+                                                    <div>Current tax savings: ${taxSavingsBalance.toFixed(2)}</div>
+                                                    <div>After this week: ${(taxSavingsBalance + calculatedSplit.tax).toFixed(2)}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Paycheck */}
+                            <div className="mt-6 p-6 bg-green-50 border-2 border-green-500 rounded-lg">
+                                <div className="text-lg text-green-800 mb-2">💵 PAY YOURSELF:</div>
+                                <div className="text-4xl font-bold text-green-600 number-mono mb-2">
+                                    ${calculatedSplit.paycheck.toFixed(2)}
+                                </div>
+                                <div className="text-sm text-green-700">✓ Safe to transfer to personal account</div>
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div className="mt-6 flex gap-4">
+                                <button
+                                    onClick={handleRecordWeek}
+                                    className="flex-1 bg-blue-600 text-white py-3 px-6 rounded-lg hover:bg-blue-700 transition-colors font-semibold"
+                                >
+                                    ✓ Record This Week
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setShowSplit(false);
+                                        setCalculatedSplit(null);
+                                    }}
+                                    className="flex-1 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg hover:bg-gray-300 transition-colors"
+                                >
+                                    ✏️ Adjust Amounts
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Already recorded */}
+                    {currentWeekData.income !== null && (
+                        <div className="bg-green-50 border-2 border-green-500 rounded-lg p-6">
+                            <h2 className="text-xl font-bold text-green-800 mb-4">✅ Week {currentWeek} Already Recorded</h2>
+                            <div className="space-y-2">
+                                <div>Income: <span className="font-semibold number-mono">${currentWeekData.income.toFixed(2)}</span></div>
+                                <div>Business: <span className="font-semibold number-mono">${currentWeekData.business.toFixed(2)}</span></div>
+                                <div>Tax: <span className="font-semibold number-mono">${currentWeekData.tax.toFixed(2)}</span></div>
+                                <div>Paycheck: <span className="font-semibold number-mono">${currentWeekData.paycheck.toFixed(2)}</span></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // ============================================================================
+        // HISTORY COMPONENT
+        // ============================================================================
+
+        function History({ appData, updateWeek }) {
+            const completedWeeks = appData.weeks.filter(w => w.income !== null).reverse();
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h1 className="text-2xl font-bold text-gray-800">📅 WEEKLY INCOME HISTORY</h1>
+                            <button
+                                onClick={() => exportWeeksToCSV(appData.weeks)}
+                                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                            >
+                                📥 Export to CSV
+                            </button>
+                        </div>
+                        <p className="text-gray-600">
+                            {completedWeeks.length} of 52 weeks recorded
+                        </p>
+                    </div>
+
+                    <div className="space-y-4">
+                        {completedWeeks.map(week => (
+                            <div key={week.week} className="bg-white rounded-lg shadow-md p-6">
+                                <div className="flex justify-between items-start mb-3">
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-gray-800">
+                                            Week {week.week} ({formatDate(week.date)})
+                                        </h3>
+                                    </div>
+                                    <button className="text-blue-600 hover:underline text-sm">
+                                        ✏️ Edit
+                                    </button>
+                                </div>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    <div>
+                                        <div className="text-sm text-gray-600">Income</div>
+                                        <div className="text-lg font-semibold text-gray-800 number-mono">
+                                            ${week.income.toFixed(2)}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-sm text-gray-600">→ Business</div>
+                                        <div className="text-lg font-semibold text-blue-600 number-mono">
+                                            ${week.business.toFixed(2)}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-sm text-gray-600">→ Tax</div>
+                                        <div className="text-lg font-semibold text-green-600 number-mono">
+                                            ${week.tax.toFixed(2)}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="text-sm text-gray-600">→ Paycheck</div>
+                                        <div className="text-lg font-semibold text-purple-600 number-mono">
+                                            ${week.paycheck.toFixed(2)}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {completedWeeks.length === 0 && (
+                            <div className="bg-gray-50 rounded-lg p-12 text-center">
+                                <p className="text-gray-500 text-lg">No weeks recorded yet</p>
+                                <p className="text-gray-400 mt-2">Go to the Dashboard to enter your first week!</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // ============================================================================
+        // TAXES COMPONENT
+        // ============================================================================
+
+        function Taxes({ appData, updateQuarterlyPayment }) {
+            const [showCalculation, setShowCalculation] = useState(false);
+
+            const completedWeeks = appData.weeks.filter(w => w.income !== null);
+            const weeksElapsed = completedWeeks.length;
+            const ytdIncome = completedWeeks.reduce((sum, w) => sum + (w.income || 0), 0);
+            const ytdTaxSavings = completedWeeks.reduce((sum, w) => sum + (w.tax || 0), 0);
+
+            const quarterlyPaid = appData.quarterlyPayments
+                .filter(q => q.paid)
+                .reduce((sum, q) => sum + q.amount, 0);
+            const taxSavingsBalance = appData.settings.startingTaxSavingsBalance + ytdTaxSavings - quarterlyPaid;
+
+            const averageWeekly = weeksElapsed > 0 ? ytdIncome / weeksElapsed : 0;
+            const projectedAnnual = averageWeekly * 52;
+            const projectedTax = calculateTotalTax(projectedAnnual, appData.settings.standardDeduction);
+
+            const totalQuarterly = appData.settings.tax2024Total;
+            const additionalNeeded = Math.max(0, projectedTax.totalTax - totalQuarterly);
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h1 className="text-2xl font-bold text-gray-800">💰 TAX TRACKING & PROJECTIONS</h1>
+                    </div>
+
+                    {/* Quarterly Payments */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">QUARTERLY PAYMENTS (SAFE HARBOR)</h2>
+                        <p className="text-gray-600 mb-4">
+                            Based on 2024 tax: ${totalQuarterly.toLocaleString()}
+                        </p>
+
+                        <div className="space-y-4">
+                            {appData.quarterlyPayments.map(payment => {
+                                const daysUntil = getDaysUntil(payment.due);
+                                const isPast = daysUntil < 0;
+
+                                return (
+                                    <div
+                                        key={payment.quarter}
+                                        className={`p-4 rounded-lg border-2 ${
+                                            payment.paid
+                                                ? 'bg-green-50 border-green-500'
+                                                : isPast
+                                                    ? 'bg-red-50 border-red-500'
+                                                    : 'bg-yellow-50 border-yellow-500'
+                                        }`}
+                                    >
+                                        <div className="flex justify-between items-start">
+                                            <div className="flex-1">
+                                                <h3 className="font-semibold text-gray-800 mb-1">
+                                                    {payment.quarter} - Due {formatDate(payment.due)}
+                                                </h3>
+                                                <div className="text-sm text-gray-600 mb-2">{payment.period}</div>
+                                                <div className="text-lg font-semibold number-mono">
+                                                    Amount: ${payment.amount.toLocaleString()}
+                                                </div>
+                                                {!payment.paid && (
+                                                    <div className="text-sm mt-1">
+                                                        {isPast ? (
+                                                            <span className="text-red-600 font-semibold">OVERDUE by {Math.abs(daysUntil)} days</span>
+                                                        ) : (
+                                                            <span className="text-yellow-600">Due in {daysUntil} days</span>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {payment.paid && (
+                                                    <div className="text-sm text-green-600 mt-1">
+                                                        ✅ PAID {payment.datePaid && `on ${formatDate(payment.datePaid)}`}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div>
+                                                {payment.paid ? (
+                                                    <button
+                                                        onClick={() => updateQuarterlyPayment(payment.quarter, false, null)}
+                                                        className="text-sm text-gray-600 hover:underline"
+                                                    >
+                                                        Mark Unpaid
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => updateQuarterlyPayment(payment.quarter, true, new Date().toISOString().split('T')[0])}
+                                                        className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                                                    >
+                                                        Mark as Paid
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* Year-End Projection */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">YEAR-END PROJECTION</h2>
+
+                        <div className="space-y-3 mb-4">
+                            <div>
+                                <span className="text-gray-600">YTD Income ({weeksElapsed} weeks):</span>
+                                <span className="ml-2 font-semibold number-mono">
+                                    ${ytdIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                            <div>
+                                <span className="text-gray-600">Projected annual:</span>
+                                <span className="ml-2 font-semibold number-mono">
+                                    ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                        </div>
+
+                        <button
+                            onClick={() => setShowCalculation(!showCalculation)}
+                            className="text-blue-600 hover:underline mb-4"
+                        >
+                            {showCalculation ? 'Hide' : 'Show'} Full Calculation ▼
+                        </button>
+
+                        {showCalculation && (
+                            <div className="p-4 bg-gray-50 rounded-lg mb-4 text-sm">
+                                <h4 className="font-semibold mb-3">DETAILED TAX CALCULATION</h4>
+
+                                <div className="space-y-2 mb-4">
+                                    <div className="font-semibold">Projected 2025 income: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+
+                                    <div className="mt-3 font-semibold">SELF-EMPLOYMENT TAX:</div>
+                                    <div className="ml-4">
+                                        <div>Net income: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div>× 0.9235 = ${projectedTax.seTaxBase.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax base)</div>
+                                        <div>× 0.153 = ${projectedTax.seTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax)</div>
+                                        <div>÷ 2 = ${projectedTax.seTaxDeduction.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax deduction)</div>
+                                    </div>
+
+                                    <div className="mt-3 font-semibold">INCOME TAX:</div>
+                                    <div className="ml-4">
+                                        <div>Adjusted income: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} - ${projectedTax.seTaxDeduction.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div>= ${projectedTax.adjustedIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div>Standard deduction: -${appData.settings.standardDeduction.toLocaleString()}</div>
+                                        <div>Taxable income: ${projectedTax.taxableIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                        <div className="mt-2">Income tax total: ${projectedTax.incomeTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                    </div>
+
+                                    <div className="mt-3 font-semibold text-lg">
+                                        TOTAL TAX: ${projectedTax.seTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} + ${projectedTax.incomeTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} = ${projectedTax.totalTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="space-y-2 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                            <div>
+                                <span className="text-gray-700">• Self-employment tax:</span>
+                                <span className="ml-2 font-semibold number-mono">
+                                    ~${projectedTax.seTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                            <div>
+                                <span className="text-gray-700">• Income tax:</span>
+                                <span className="ml-2 font-semibold number-mono">
+                                    ~${projectedTax.incomeTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                            <div className="pt-2 border-t border-blue-300">
+                                <span className="text-gray-700 font-semibold">• Total projected tax:</span>
+                                <span className="ml-2 font-semibold number-mono text-lg">
+                                    ~${projectedTax.totalTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="mt-4 space-y-2">
+                            <div>
+                                <span className="text-gray-600">Quarterly payments:</span>
+                                <span className="ml-2 font-semibold number-mono">
+                                    ${totalQuarterly.toLocaleString()}
+                                </span>
+                            </div>
+                            <div>
+                                <span className="text-gray-600">Additional needed:</span>
+                                <span className={`ml-2 font-semibold number-mono ${
+                                    additionalNeeded > 0 ? 'text-red-600' : 'text-green-600'
+                                }`}>
+                                    ~${additionalNeeded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                            <div>
+                                <span className="text-gray-600">Current tax savings:</span>
+                                <span className="ml-2 font-semibold number-mono">
+                                    ${taxSavingsBalance.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                </span>
+                            </div>
+                            <div className={`mt-3 p-3 rounded-lg ${
+                                taxSavingsBalance >= projectedTax.totalTax
+                                    ? 'bg-green-50 text-green-700'
+                                    : 'bg-yellow-50 text-yellow-700'
+                            }`}>
+                                <strong>Status: </strong>
+                                {taxSavingsBalance >= projectedTax.totalTax
+                                    ? `On track! You have enough saved. ✓`
+                                    : `Behind by ~$${(projectedTax.totalTax - taxSavingsBalance).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                                }
+                            </div>
+                        </div>
+
+                        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                            <p className="text-blue-800 text-sm">
+                                Keep saving {(appData.settings.taxSavingsRate * 100).toFixed(0)}% each week - you'll catch up as more income comes in!
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Tax Savings Account */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">TAX SAVINGS ACCOUNT</h2>
+                        <div className="mb-4">
+                            <div className="text-3xl font-bold text-green-600 number-mono">
+                                ${taxSavingsBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </div>
+                            <div className="text-sm text-gray-600">Current balance</div>
+                        </div>
+
+                        <div className="text-sm text-gray-600">
+                            Recent activity shown in Dashboard and History screens
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ============================================================================
+        // EXPENSES COMPONENT
+        // ============================================================================
+
+        function Expenses({ appData, updateExpenses, updateSettings }) {
+            const [showMonthlyBreakdown, setShowMonthlyBreakdown] = useState(false);
+            const [newBillName, setNewBillName] = useState('');
+            const [newBillDay, setNewBillDay] = useState(1);
+            const [editingBalance, setEditingBalance] = useState(false);
+            const [newBalance, setNewBalance] = useState(0);
+
+            const handleCsvUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const text = await file.text();
+                try {
+                    const budget = await parseExpenseCSV(text);
+
+                    // Keep existing due dates, add new ones for new expenses
+                    const updatedDueDates = { ...appData.expenses.dueDates };
+                    Object.keys(budget).forEach(expense => {
+                        if (!updatedDueDates[expense]) {
+                            updatedDueDates[expense] = 1;
+                        }
+                    });
+
+                    updateExpenses(budget, updatedDueDates);
+                    alert('Budget uploaded successfully! ✓');
+                } catch (error) {
+                    alert('Error parsing CSV file. Please check the format.');
+                }
+            };
+
+            const handleUpdateDueDate = (expense, day) => {
+                updateExpenses(appData.expenses.budget, {
+                    ...appData.expenses.dueDates,
+                    [expense]: parseInt(day)
+                });
+            };
+
+            const handleAddBill = () => {
+                if (!newBillName.trim()) {
+                    alert('Please enter a bill name');
+                    return;
+                }
+
+                // Add to due dates
+                const updatedDueDates = {
+                    ...appData.expenses.dueDates,
+                    [newBillName]: newBillDay
+                };
+
+                // Add to budget with all zeros
+                const updatedBudget = {
+                    ...appData.expenses.budget,
+                    [newBillName]: Array(12).fill(0)
+                };
+
+                updateExpenses(updatedBudget, updatedDueDates);
+                setNewBillName('');
+                setNewBillDay(1);
+            };
+
+            const handleUpdateBalance = () => {
+                updateSettings({ startingCheckingBalance: newBalance });
+                setEditingBalance(false);
+            };
+
+            // Calculate monthly totals
+            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const monthlyTotals = monthNames.map((_, i) => {
+                return Object.values(appData.expenses.budget).reduce((sum, expenseArray) => {
+                    return sum + (expenseArray[i] || 0);
+                }, 0);
+            });
+
+            const currentMonth = new Date().getMonth();
+            const nextMonth = (currentMonth + 1) % 12;
+            const averageMonthly = monthlyTotals.reduce((sum, val) => sum + val, 0) / 12;
+            const totalYear = monthlyTotals.reduce((sum, val) => sum + val, 0);
+
+            // Calculate business checking balance
+            const completedWeeks = appData.weeks.filter(w => w.income !== null);
+            const ytdBusiness = completedWeeks.reduce((sum, w) => sum + (w.business || 0), 0);
+            const businessCheckingBalance = appData.settings.startingCheckingBalance + ytdBusiness;
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h1 className="text-2xl font-bold text-gray-800">🏢 BUSINESS EXPENSES</h1>
+                    </div>
+
+                    {/* Monthly Budget */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">MONTHLY BUDGET</h2>
+
+                        <div className="space-y-3 mb-4">
+                            <input
+                                type="file"
+                                accept=".csv"
+                                onChange={handleCsvUpload}
+                                className="w-full p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-500 cursor-pointer"
+                            />
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={generateExpenseTemplate}
+                                    className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm"
+                                >
+                                    📥 Download Template
+                                </button>
+                            </div>
+                        </div>
+
+                        {Object.keys(appData.expenses.budget).length > 0 && (
+                            <>
+                                <div className="mb-4 p-4 bg-gray-50 rounded-lg">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <div className="text-sm text-gray-600">Current month ({monthNames[currentMonth]})</div>
+                                            <div className="text-2xl font-bold text-gray-800 number-mono">
+                                                ${monthlyTotals[currentMonth].toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div className="text-sm text-gray-600">Next month ({monthNames[nextMonth]})</div>
+                                            <div className="text-2xl font-bold text-gray-800 number-mono">
+                                                ${monthlyTotals[nextMonth].toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button
+                                    onClick={() => setShowMonthlyBreakdown(!showMonthlyBreakdown)}
+                                    className="text-blue-600 hover:underline mb-4"
+                                >
+                                    {showMonthlyBreakdown ? 'Hide' : 'View'} Monthly Breakdown ▼
+                                </button>
+
+                                {showMonthlyBreakdown && (
+                                    <div className="p-4 bg-gray-50 rounded-lg">
+                                        <h3 className="font-semibold mb-3">2025 MONTHLY EXPENSES</h3>
+                                        <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-sm">
+                                            {monthNames.map((month, i) => (
+                                                <div key={month} className={i === currentMonth ? 'font-bold' : ''}>
+                                                    <div className="text-gray-600">{month}</div>
+                                                    <div className="number-mono">
+                                                        ${monthlyTotals[i].toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="mt-4 pt-4 border-t border-gray-300">
+                                            <div className="flex justify-between">
+                                                <span>Average: ${averageMonthly.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}/month</span>
+                                                <span>Total 2025: ${totalYear.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
+
+                    {/* Bill Due Dates */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">BILL DUE DATES</h2>
+                        <p className="text-gray-600 mb-4">Configure when each bill is due:</p>
+
+                        <div className="space-y-3 mb-6">
+                            {Object.entries(appData.expenses.dueDates).map(([expense, day]) => (
+                                <div key={expense} className="flex items-center gap-4">
+                                    <label className="flex-1 text-gray-700">{expense}:</label>
+                                    <select
+                                        value={day}
+                                        onChange={(e) => handleUpdateDueDate(expense, e.target.value)}
+                                        className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                    >
+                                        {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
+                                            <option key={d} value={d}>
+                                                {d}{d === 1 ? 'st' : d === 2 ? 'nd' : d === 3 ? 'rd' : 'th'}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <span className="text-gray-500">of month</span>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Add New Bill */}
+                        <div className="border-t pt-4">
+                            <h3 className="font-semibold mb-3">Add New Bill</h3>
+                            <div className="flex gap-3">
+                                <input
+                                    type="text"
+                                    value={newBillName}
+                                    onChange={(e) => setNewBillName(e.target.value)}
+                                    placeholder="Bill name"
+                                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                />
+                                <select
+                                    value={newBillDay}
+                                    onChange={(e) => setNewBillDay(parseInt(e.target.value))}
+                                    className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                >
+                                    {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
+                                        <option key={d} value={d}>
+                                            {d}{d === 1 ? 'st' : d === 2 ? 'nd' : d === 3 ? 'rd' : 'th'}
+                                        </option>
+                                    ))}
+                                </select>
+                                <button
+                                    onClick={handleAddBill}
+                                    className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                                >
+                                    + Add Bill
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Business Checking */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">BUSINESS CHECKING</h2>
+
+                        <div className="mb-4">
+                            <div className="text-sm text-gray-600">Current balance</div>
+                            <div className="text-3xl font-bold text-blue-600 number-mono">
+                                ${businessCheckingBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </div>
+                            <div className="text-sm text-gray-500 mt-1">
+                                Last verified: {formatDate(new Date().toISOString())}
+                            </div>
+                            {!editingBalance ? (
+                                <button
+                                    onClick={() => {
+                                        setNewBalance(businessCheckingBalance);
+                                        setEditingBalance(true);
+                                    }}
+                                    className="mt-2 text-blue-600 hover:underline text-sm"
+                                >
+                                    Update Balance
+                                </button>
+                            ) : (
+                                <div className="mt-3 flex gap-2">
+                                    <div className="relative flex-1">
+                                        <span className="absolute left-3 top-2 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={newBalance}
+                                            onChange={(e) => setNewBalance(parseFloat(e.target.value) || 0)}
+                                            className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleUpdateBalance}
+                                        className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        Save
+                                    </button>
+                                    <button
+                                        onClick={() => setEditingBalance(false)}
+                                        className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="border-t pt-4">
+                            <div className="text-sm text-gray-600 mb-2">Minimum cushion</div>
+                            <div className="text-xl font-bold text-gray-800 number-mono">
+                                ${appData.settings.minimumCushion.toLocaleString()}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ============================================================================
+        // SETTINGS COMPONENT
+        // ============================================================================
+
+        function Settings({ appData, updateSettings, setAppData }) {
+            const [editMode, setEditMode] = useState(false);
+            const [formData, setFormData] = useState({
+                tax2024Total: appData.settings.tax2024Total,
+                standardDeduction: appData.settings.standardDeduction,
+                taxSavingsRate: appData.settings.taxSavingsRate * 100,
+                businessName: appData.settings.businessName,
+                startDate: appData.settings.startDate,
+                startingCheckingBalance: appData.settings.startingCheckingBalance,
+                minimumCushion: appData.settings.minimumCushion
+            });
+
+            const handleSave = () => {
+                updateSettings({
+                    tax2024Total: parseFloat(formData.tax2024Total),
+                    quarterlyPayment: Math.round(parseFloat(formData.tax2024Total) / 4),
+                    standardDeduction: parseFloat(formData.standardDeduction),
+                    taxSavingsRate: parseFloat(formData.taxSavingsRate) / 100,
+                    businessName: formData.businessName,
+                    startDate: formData.startDate,
+                    startingCheckingBalance: parseFloat(formData.startingCheckingBalance),
+                    minimumCushion: parseFloat(formData.minimumCushion)
+                });
+                setEditMode(false);
+                alert('Settings saved! ✓');
+            };
+
+            const handleClearData = () => {
+                if (confirm('Are you sure you want to clear ALL data? This cannot be undone!')) {
+                    if (confirm('Really sure? This will delete everything!')) {
+                        localStorage.removeItem(STORAGE_KEY);
+                        window.location.reload();
+                    }
+                }
+            };
+
+            const handleImportBackup = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = JSON.parse(event.target.result);
+                        setAppData(data);
+                        alert('Backup imported successfully! ✓');
+                    } catch (error) {
+                        alert('Error importing backup. Please check the file format.');
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h1 className="text-2xl font-bold text-gray-800">⚙️ SETTINGS</h1>
+                    </div>
+
+                    {/* Tax Settings */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">TAX SETTINGS</h2>
+
+                        {!editMode ? (
+                            <div className="space-y-3">
+                                <div>
+                                    <div className="text-sm text-gray-600">2024 Total Tax</div>
+                                    <div className="text-lg font-semibold number-mono">
+                                        ${appData.settings.tax2024Total.toLocaleString()}
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="text-sm text-gray-600">Quarterly Payment Amount</div>
+                                    <div className="text-lg font-semibold number-mono">
+                                        ${appData.settings.quarterlyPayment.toLocaleString()} (auto-calculated)
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="text-sm text-gray-600">Standard Deduction (2024)</div>
+                                    <div className="text-lg font-semibold number-mono">
+                                        ${appData.settings.standardDeduction.toLocaleString()}
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="text-sm text-gray-600">Tax Savings Rate</div>
+                                    <div className="text-lg font-semibold">
+                                        {(appData.settings.taxSavingsRate * 100).toFixed(0)}% of weekly income
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setEditMode(true)}
+                                    className="mt-4 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                                >
+                                    Edit Settings
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm text-gray-600 mb-1">2024 Total Tax</label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={formData.tax2024Total}
+                                            onChange={(e) => setFormData({ ...formData, tax2024Total: e.target.value })}
+                                            className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-sm text-gray-600 mb-1">Standard Deduction (2024)</label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-3 text-gray-500">$</span>
+                                        <input
+                                            type="number"
+                                            value={formData.standardDeduction}
+                                            onChange={(e) => setFormData({ ...formData, standardDeduction: e.target.value })}
+                                            className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-sm text-gray-600 mb-1">Tax Savings Rate (%)</label>
+                                    <div className="relative">
+                                        <input
+                                            type="number"
+                                            value={formData.taxSavingsRate}
+                                            onChange={(e) => setFormData({ ...formData, taxSavingsRate: e.target.value })}
+                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                                        />
+                                        <span className="absolute right-3 top-3 text-gray-500">%</span>
+                                    </div>
+                                </div>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={handleSave}
+                                        className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        Save Changes
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            setEditMode(false);
+                                            setFormData({
+                                                tax2024Total: appData.settings.tax2024Total,
+                                                standardDeduction: appData.settings.standardDeduction,
+                                                taxSavingsRate: appData.settings.taxSavingsRate * 100,
+                                                businessName: appData.settings.businessName,
+                                                startDate: appData.settings.startDate,
+                                                startingCheckingBalance: appData.settings.startingCheckingBalance,
+                                                minimumCushion: appData.settings.minimumCushion
+                                            });
+                                        }}
+                                        className="flex-1 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Business Settings */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">BUSINESS SETTINGS</h2>
+                        <div className="space-y-3">
+                            <div>
+                                <div className="text-sm text-gray-600">Business Name</div>
+                                <div className="text-lg font-semibold">{appData.settings.businessName}</div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600">Start Date</div>
+                                <div className="text-lg font-semibold">{appData.settings.startDate}</div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600">Starting Business Checking Balance</div>
+                                <div className="text-lg font-semibold number-mono">
+                                    ${appData.settings.startingCheckingBalance.toLocaleString()}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600">Minimum Cushion</div>
+                                <div className="text-lg font-semibold number-mono">
+                                    ${appData.settings.minimumCushion.toLocaleString()}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Data Management */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">DATA MANAGEMENT</h2>
+                        <div className="space-y-3">
+                            <button
+                                onClick={() => exportWeeksToCSV(appData.weeks)}
+                                className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-left"
+                            >
+                                📥 Export All Data (CSV)
+                            </button>
+                            <button
+                                onClick={exportToJSON}
+                                className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-left"
+                            >
+                                💾 Backup Data (JSON)
+                            </button>
+                            <div>
+                                <label className="w-full bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors cursor-pointer block text-left">
+                                    📂 Import Backup
+                                    <input
+                                        type="file"
+                                        accept=".json"
+                                        onChange={handleImportBackup}
+                                        className="hidden"
+                                    />
+                                </label>
+                            </div>
+                            <button
+                                onClick={handleClearData}
+                                className="w-full bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors text-left"
+                            >
+                                🗑️ Clear All Data (Dangerous!)
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* About */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">ABOUT</h2>
+                        <div className="space-y-2 text-gray-700">
+                            <p className="font-semibold">Alyx Steadman Therapy Income Manager</p>
+                            <p className="text-sm">Version 1.0</p>
+                            <p className="text-sm">Data stored locally in your browser</p>
+                            <p className="text-sm mt-4">
+                                Created for managing self-employed therapist income, taxes, and expenses.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ============================================================================
+        // RENDER APP
+        // ============================================================================
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
