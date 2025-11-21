@@ -411,8 +411,7 @@ If you modify cached resources in `service-worker.js`:
 
 ## Version History
 
-- **v2.0** (November 2025): PWA conversion, removed business checking tracking, added DueDay to CSV, period end countdown
-- **v1.0** (November 2025): Initial release
+- **v1.0** (November 2025): Initial release with PWA support, offline functionality, smart tax tracking, expense management with DueDay in CSV, quarterly tax period end countdown, and data export/import
 
 ## License
 
@@ -420,6 +419,6 @@ Custom-built for Alyx Steadman Therapy PLLC. All rights reserved.
 
 ---
 
-**Version**: 2.0 (PWA)
+**Version**: 1.0
 **Last Updated**: November 2025
 **Author**: Built with Claude Code

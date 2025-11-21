@@ -486,6 +486,15 @@
         }
 
         function exportWeeksToCSV(weeks) {
+            // Metadata header
+            const exportDate = new Date().toISOString();
+            const metadata = [
+                '# Alyx Steadman Therapy PLLC - Income Manager',
+                `# Version: ${STORAGE_VERSION}`,
+                `# Exported: ${exportDate}`,
+                ''
+            ].join('\n');
+
             const headers = ['Week', 'Date', 'Income', 'Business', 'Tax', 'Paycheck', 'Notes'];
             const rows = weeks
                 .filter(w => w.income !== null)
@@ -499,7 +508,7 @@
                     w.notes || ''
                 ]);
 
-            const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+            const csv = metadata + [headers, ...rows].map(row => row.join(',')).join('\n');
 
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -2665,10 +2674,26 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 reader.onload = (event) => {
                     try {
                         const data = JSON.parse(event.target.result);
+
+                        // Version checking
+                        const importVersion = data.version || 'unknown';
+                        console.log(`Importing backup - Version: ${importVersion}, Current: ${STORAGE_VERSION}`);
+
+                        // Warn if version mismatch (future-proofing)
+                        if (importVersion !== STORAGE_VERSION && importVersion !== 'unknown') {
+                            const proceed = confirm(
+                                `This backup is from version ${importVersion}, but you're running version ${STORAGE_VERSION}.\n\n` +
+                                `The import may work, but there could be compatibility issues.\n\n` +
+                                `Do you want to proceed?`
+                            );
+                            if (!proceed) return;
+                        }
+
                         setAppData(data);
-                        alert('Backup imported successfully! ✓');
+                        alert(`Backup imported successfully! ✓${importVersion !== 'unknown' ? `\n(Version: ${importVersion})` : ''}`);
                     } catch (error) {
                         alert('Error importing backup. Please check the file format.');
+                        console.error('Import error:', error);
                     }
                 };
                 reader.readAsText(file);

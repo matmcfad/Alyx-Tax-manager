@@ -1,4 +1,4 @@
-const CACHE_NAME = 'alyx-income-manager-v1';
+const CACHE_NAME = 'alyx-income-manager-v1.0';
 const urlsToCache = [
   './',
   './index.html',
