@@ -4,6 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Alyx Steadman Therapy PLLC - Income Manager</title>
+
+    <!-- PWA Meta Tags -->
+    <meta name="description" content="Income allocation and tax tracking for self-employed therapists">
+    <meta name="theme-color" content="#2563eb">
+    <link rel="manifest" href="./manifest.json">
+
+    <!-- Apple Touch Icon -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Alyx Income">
+    <link rel="apple-touch-icon" href="./icon-192.png">
+
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -40,10 +52,10 @@
         ];
 
         const QUARTERLY_DUE_DATES = [
-            { quarter: "Q1 2025", period: "Jan 1 - Mar 31", due: "2025-04-15", amount: 6416 },
-            { quarter: "Q2 2025", period: "Apr 1 - May 31", due: "2025-06-15", amount: 6416 },
-            { quarter: "Q3 2025", period: "Jun 1 - Aug 31", due: "2025-09-15", amount: 6416 },
-            { quarter: "Q4 2025", period: "Sep 1 - Dec 31", due: "2026-01-15", amount: 6416 }
+            { quarter: "Q1 2025", period: "Jan 1 - Mar 31", periodEnd: "2025-03-31", due: "2025-04-15", amount: 6416 },
+            { quarter: "Q2 2025", period: "Apr 1 - May 31", periodEnd: "2025-05-31", due: "2025-06-15", amount: 6416 },
+            { quarter: "Q3 2025", period: "Jun 1 - Aug 31", periodEnd: "2025-08-31", due: "2025-09-15", amount: 6416 },
+            { quarter: "Q4 2025", period: "Sep 1 - Dec 31", periodEnd: "2025-12-31", due: "2026-01-15", amount: 6416 }
         ];
 
         const DEFAULT_SETTINGS = {
@@ -991,7 +1003,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             // Next quarterly payment
             const nextQuarterly = appData.quarterlyPayments.find(q => !q.paid);
-            const daysUntilNext = nextQuarterly ? getDaysUntil(nextQuarterly.due) : null;
+            const daysUntilNext = nextQuarterly ? getDaysUntil(nextQuarterly.periodEnd) : null;
 
             // Missing weeks
             const missingWeeks = appData.weeks.filter(w =>
@@ -1542,9 +1554,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     <span className="font-semibold">{nextQuarterly.quarter}</span>
                                 </div>
                                 <div>
-                                    <span className="text-gray-600">Due: </span>
-                                    <span className="font-semibold">{formatDate(nextQuarterly.due)}</span>
+                                    <span className="text-gray-600">Period Ends: </span>
+                                    <span className="font-semibold">{formatDate(nextQuarterly.periodEnd)}</span>
                                     <span className="text-sm text-gray-500 ml-2">({daysUntilNext} days)</span>
+                                </div>
+                                <div>
+                                    <span className="text-gray-600">Payment Due: </span>
+                                    <span className="font-semibold">{formatDate(nextQuarterly.due)}</span>
                                 </div>
                                 <div>
                                     <span className="text-gray-600">Amount: </span>
@@ -2583,6 +2599,42 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 businessName: appData.settings.businessName,
                 startDate: appData.settings.startDate
             });
+            const [deferredPrompt, setDeferredPrompt] = useState(null);
+            const [isInstalled, setIsInstalled] = useState(false);
+
+            // Listen for install prompt
+            React.useEffect(() => {
+                const handleBeforeInstallPrompt = (e) => {
+                    e.preventDefault();
+                    setDeferredPrompt(e);
+                };
+
+                window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+                // Check if already installed
+                if (window.matchMedia('(display-mode: standalone)').matches) {
+                    setIsInstalled(true);
+                }
+
+                return () => {
+                    window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+                };
+            }, []);
+
+            const handleInstallClick = async () => {
+                if (!deferredPrompt) {
+                    alert('App is already installed or install prompt is not available.');
+                    return;
+                }
+
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+
+                if (outcome === 'accepted') {
+                    setDeferredPrompt(null);
+                    setIsInstalled(true);
+                }
+            };
 
             const handleSave = () => {
                 updateSettings({
@@ -2768,6 +2820,40 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         </div>
                     </div>
 
+                    {/* Install App */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">📱 INSTALL APP</h2>
+                        {isInstalled ? (
+                            <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                                <p className="text-green-700">✓ App is installed! Launch from your home screen or app drawer.</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                <p className="text-gray-600">Install this app on your device for:</p>
+                                <ul className="list-disc list-inside text-gray-600 space-y-1 ml-4">
+                                    <li>Offline access</li>
+                                    <li>Better data persistence</li>
+                                    <li>Native app experience</li>
+                                    <li>Quick access from home screen</li>
+                                </ul>
+                                {deferredPrompt ? (
+                                    <button
+                                        onClick={handleInstallClick}
+                                        className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+                                    >
+                                        📱 Install App
+                                    </button>
+                                ) : (
+                                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                                        <p className="text-sm text-blue-700">
+                                            To install: Open this page in Chrome, Edge, or Safari and look for the "Install" option in your browser menu.
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
                     {/* About */}
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <h2 className="text-xl font-bold text-gray-800 mb-4">ABOUT</h2>
@@ -2789,6 +2875,34 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
         // ============================================================================
 
         ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(registration => {
+                        console.log('Service Worker registered successfully:', registration.scope);
+
+                        // Check for updates
+                        registration.addEventListener('updatefound', () => {
+                            const newWorker = registration.installing;
+                            newWorker.addEventListener('statechange', () => {
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    // New service worker available, show update prompt
+                                    if (confirm('A new version is available! Reload to update?')) {
+                                        window.location.reload();
+                                    }
+                                }
+                            });
+                        });
+                    })
+                    .catch(err => {
+                        console.log('Service Worker registration failed:', err);
+                    });
+            });
+        }
     </script>
 </body>
 </html>
