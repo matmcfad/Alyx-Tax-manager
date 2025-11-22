@@ -652,7 +652,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                     <div className="container mx-auto px-4 py-6 max-w-4xl">
                         {currentScreen === 'dashboard' && (
-                            <Dashboard appData={appData} updateWeek={updateWeek} updateSettings={updateSettings} />
+                            <Dashboard appData={appData} updateWeek={updateWeek} updateSettings={updateSettings} setCurrentScreen={setCurrentScreen} />
                         )}
                         {currentScreen === 'history' && (
                             <History appData={appData} updateWeek={updateWeek} />
@@ -972,7 +972,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
         // DASHBOARD COMPONENT
         // ============================================================================
 
-        function Dashboard({ appData, updateWeek, updateSettings }) {
+        function Dashboard({ appData, updateWeek, updateSettings, setCurrentScreen }) {
             const [weeklyIncome, setWeeklyIncome] = useState('');
             const [showSplit, setShowSplit] = useState(false);
             const [showBusinessDetails, setShowBusinessDetails] = useState(false);
@@ -2642,6 +2642,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             });
             const [deferredPrompt, setDeferredPrompt] = useState(null);
             const [isInstalled, setIsInstalled] = useState(false);
+            const [catchUpCsvFile, setCatchUpCsvFile] = useState(null);
 
             // Listen for install prompt
             React.useEffect(() => {
@@ -2696,6 +2697,145 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         window.location.reload();
                     }
                 }
+            };
+
+            const handleCatchUpCsvUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                setCatchUpCsvFile(file);
+
+                // Parse CSV file
+                Papa.parse(file, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: (results) => {
+                        try {
+                            // Detect CSV format by checking headers
+                            const headers = results.meta.fields || [];
+                            const hasTax = headers.some(h => h.toLowerCase() === 'tax');
+                            const hasPaycheck = headers.some(h => h.toLowerCase() === 'paycheck');
+                            const is4Column = hasTax && hasPaycheck;
+
+                            const weekDataToImport = [];
+                            let errorMessages = [];
+
+                            results.data.forEach((row, index) => {
+                                const weekStr = (row.Week || row.week || '').toString().trim();
+                                const week = parseInt(weekStr);
+
+                                const incomeStr = (row.Income || row.income || '').toString().trim();
+                                const cleanedIncome = incomeStr.replace(/[$,\s]/g, '');
+                                const income = parseFloat(cleanedIncome);
+
+                                if (isNaN(week) || week < 1 || week > 52) {
+                                    errorMessages.push(`Row ${index + 2}: Invalid week number "${weekStr}"`);
+                                    return;
+                                }
+
+                                if (isNaN(income) || income < 0) {
+                                    errorMessages.push(`Row ${index + 2}: Invalid income "${incomeStr}"`);
+                                    return;
+                                }
+
+                                const weekData = { week, income };
+
+                                if (is4Column) {
+                                    const taxStr = (row.Tax || row.tax || '0').toString().trim();
+                                    const cleanedTax = taxStr.replace(/[$,\s]/g, '');
+                                    const tax = parseFloat(cleanedTax) || 0;
+
+                                    const paycheckStr = (row.Paycheck || row.paycheck || '0').toString().trim();
+                                    const cleanedPaycheck = paycheckStr.replace(/[$,\s]/g, '');
+                                    const paycheck = parseFloat(cleanedPaycheck) || 0;
+
+                                    if (tax < 0 || paycheck < 0) {
+                                        errorMessages.push(`Row ${index + 2}: Tax and Paycheck must be non-negative`);
+                                        return;
+                                    }
+
+                                    weekData.tax = tax;
+                                    weekData.paycheck = paycheck;
+                                }
+
+                                weekDataToImport.push(weekData);
+                            });
+
+                            if (errorMessages.length > 0) {
+                                alert('CSV Upload Errors:\n\n' + errorMessages.join('\n'));
+                                return;
+                            }
+
+                            if (weekDataToImport.length === 0) {
+                                alert('No valid data found in CSV.');
+                                return;
+                            }
+
+                            // Sort by week number
+                            weekDataToImport.sort((a, b) => a.week - b.week);
+
+                            // Calculate balancing for 4-column imports
+                            if (is4Column) {
+                                const totalIncome = weekDataToImport.reduce((sum, w) => sum + w.income, 0);
+                                const totalTax = weekDataToImport.reduce((sum, w) => sum + w.tax, 0);
+                                const totalPaycheck = weekDataToImport.reduce((sum, w) => sum + w.paycheck, 0);
+                                const totalBusiness = totalIncome - totalTax - totalPaycheck;
+
+                                // Apply business to each week
+                                weekDataToImport.forEach((w, index) => {
+                                    if (index === weekDataToImport.length - 1) {
+                                        // Last week gets all the business
+                                        w.business = totalBusiness;
+                                    } else {
+                                        w.business = 0;
+                                    }
+                                });
+                            }
+
+                            // Update the app data
+                            const updatedWeeks = [...appData.weeks];
+                            weekDataToImport.forEach(importWeek => {
+                                const weekIndex = updatedWeeks.findIndex(w => w.week === importWeek.week);
+                                if (weekIndex !== -1) {
+                                    if (is4Column) {
+                                        updatedWeeks[weekIndex] = {
+                                            ...updatedWeeks[weekIndex],
+                                            income: importWeek.income,
+                                            business: importWeek.business,
+                                            tax: importWeek.tax,
+                                            paycheck: importWeek.paycheck,
+                                            status: 'completed'
+                                        };
+                                    } else {
+                                        // For 2-column, we'd need to calculate splits
+                                        // For now, just update income
+                                        updatedWeeks[weekIndex] = {
+                                            ...updatedWeeks[weekIndex],
+                                            income: importWeek.income,
+                                            status: 'pending'
+                                        };
+                                    }
+                                }
+                            });
+
+                            setAppData({ ...appData, weeks: updatedWeeks });
+
+                            if (is4Column) {
+                                alert(`Successfully imported ${weekDataToImport.length} week(s) in Historical format!\n\nWeek ${weekDataToImport[weekDataToImport.length - 1].week} received the balancing business expense.`);
+                            } else {
+                                alert(`Successfully imported ${weekDataToImport.length} week(s) in Simple format!\n\nNote: You'll need to complete the calculations for each week from the Dashboard.`);
+                            }
+
+                            setCatchUpCsvFile(null);
+
+                        } catch (error) {
+                            alert('Error parsing CSV: ' + error.message);
+                        }
+                    },
+                    error: (error) => {
+                        alert('Error reading CSV file: ' + error.message);
+                    }
+                });
             };
 
             const handleImportBackup = (e) => {
