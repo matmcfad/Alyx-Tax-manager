@@ -2892,19 +2892,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 <div>
                                     <div className="text-sm text-gray-600">Quarterly Payment Amount</div>
                                     <div className="text-lg font-semibold number-mono">
-                                        ${appData.settings.quarterlyPayment.toLocaleString()} (auto-calculated)
+                                        ${appData.settings.quarterlyPayment.toLocaleString()}
                                     </div>
                                 </div>
                                 <div>
                                     <div className="text-sm text-gray-600">Standard Deduction (2024)</div>
                                     <div className="text-lg font-semibold number-mono">
                                         ${appData.settings.standardDeduction.toLocaleString()}
-                                    </div>
-                                </div>
-                                <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                                    <div className="text-sm font-semibold text-blue-800">Smart Tax Mode</div>
-                                    <div className="text-sm text-blue-700 mt-1">
-                                        Tax savings calculated automatically each week based on projected annual tax and weeks remaining.
                                     </div>
                                 </div>
                                 <button
@@ -3017,24 +3011,89 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         </div>
                     </div>
 
-                    {/* Import Historical Data */}
+                    {/* Import Past Weeks */}
                     <div className="bg-white rounded-lg shadow-md p-6">
-                        <h2 className="text-xl font-bold text-gray-800 mb-4">📥 IMPORT HISTORICAL DATA</h2>
-                        <p className="text-gray-600 mb-4">
-                            Bulk-import weeks from a CSV file. Useful for migrating from your old system.
+                        <h2 className="text-xl font-bold text-gray-800 mb-2">📥 IMPORT PAST WEEKS</h2>
+                        <p className="text-gray-600 mb-6">
+                            Switching from a spreadsheet or catching up on several weeks? Import your data all at once.
                         </p>
 
-                        <div className="space-y-4">
-                            {/* CSV Upload */}
+                        <div className="space-y-5">
+                            {/* Step 1: Choose Template */}
+                            <div>
+                                <h3 className="font-semibold text-gray-800 mb-3">Step 1: Download the right template for your situation</h3>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {/* Quick Catch-Up */}
+                                    <div className="border-2 border-gray-300 rounded-lg p-4 hover:border-blue-400 transition-colors">
+                                        <div className="flex items-start gap-2 mb-2">
+                                            <span className="text-2xl">⚡</span>
+                                            <div className="flex-1">
+                                                <h4 className="font-semibold text-gray-800">Quick Catch-Up</h4>
+                                                <p className="text-sm text-gray-600 mb-3">
+                                                    I just have my income amounts for each week
+                                                </p>
+                                                <button
+                                                    onClick={() => {
+                                                        const template = 'Week,Income\n1,2500\n2,2800\n3,2600';
+                                                        const blob = new Blob([template], { type: 'text/csv' });
+                                                        const url = URL.createObjectURL(blob);
+                                                        const a = document.createElement('a');
+                                                        a.href = url;
+                                                        a.download = 'catch-up-template.csv';
+                                                        a.click();
+                                                        URL.revokeObjectURL(url);
+                                                    }}
+                                                    className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                                                >
+                                                    Download Template
+                                                </button>
+                                                <p className="text-xs text-gray-500 mt-2">
+                                                    The app will calculate your tax savings and paycheck splits for you
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Full Migration */}
+                                    <div className="border-2 border-blue-300 rounded-lg p-4 bg-blue-50">
+                                        <div className="flex items-start gap-2 mb-2">
+                                            <span className="text-2xl">📊</span>
+                                            <div className="flex-1">
+                                                <h4 className="font-semibold text-gray-800">Full Migration</h4>
+                                                <p className="text-sm text-gray-600 mb-3">
+                                                    I have income + what I actually withdrew for taxes and paychecks
+                                                </p>
+                                                <button
+                                                    onClick={() => {
+                                                        const template = 'Week,Income,Tax,Paycheck\n1,715.19,0,0\n2,2242.42,0,0\n8,2687.03,2000.00,7911.74';
+                                                        const blob = new Blob([template], { type: 'text/csv' });
+                                                        const url = URL.createObjectURL(blob);
+                                                        const a = document.createElement('a');
+                                                        a.href = url;
+                                                        a.download = 'migration-template.csv';
+                                                        a.click();
+                                                        URL.revokeObjectURL(url);
+                                                    }}
+                                                    className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                                                >
+                                                    Download Template
+                                                </button>
+                                                <p className="text-xs text-gray-500 mt-2">
+                                                    Perfect for migrating from another system — your business expenses will be calculated automatically
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Step 2: Fill & Upload */}
                             <div className="border border-gray-300 rounded-lg p-4">
-                                <h3 className="font-semibold text-gray-800 mb-2">Upload CSV File</h3>
+                                <h3 className="font-semibold text-gray-800 mb-2">Step 2: Fill in your data and upload</h3>
                                 <p className="text-sm text-gray-600 mb-3">
-                                    Supports two formats:
+                                    Open the template in Excel or Google Sheets, add your weeks, then upload it here:
                                 </p>
-                                <ul className="text-sm text-gray-600 mb-3 ml-6 space-y-1">
-                                    <li><strong>Simple:</strong> Week,Income (app calculates splits)</li>
-                                    <li><strong>Historical:</strong> Week,Income,Tax,Paycheck (uses actual amounts)</li>
-                                </ul>
                                 <label className="block">
                                     <input
                                         type="file"
@@ -3050,48 +3109,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 )}
                             </div>
 
-                            {/* Template Downloads */}
-                            <div className="border border-gray-300 rounded-lg p-4">
-                                <h3 className="font-semibold text-gray-800 mb-2">Download Templates</h3>
-                                <div className="flex gap-3">
-                                    <button
-                                        onClick={() => {
-                                            const template = 'Week,Income\n1,2500\n2,2800\n3,2600';
-                                            const blob = new Blob([template], { type: 'text/csv' });
-                                            const url = URL.createObjectURL(blob);
-                                            const a = document.createElement('a');
-                                            a.href = url;
-                                            a.download = 'import-template-simple.csv';
-                                            a.click();
-                                            URL.revokeObjectURL(url);
-                                        }}
-                                        className="flex-1 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors text-sm"
-                                    >
-                                        Simple Template
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            const template = 'Week,Income,Tax,Paycheck\n1,715.19,0,0\n2,2242.42,0,0\n8,2687.03,2000.00,7911.74';
-                                            const blob = new Blob([template], { type: 'text/csv' });
-                                            const url = URL.createObjectURL(blob);
-                                            const a = document.createElement('a');
-                                            a.href = url;
-                                            a.download = 'import-template-historical.csv';
-                                            a.click();
-                                            URL.revokeObjectURL(url);
-                                        }}
-                                        className="flex-1 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors text-sm"
-                                    >
-                                        Historical Template
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Info about historical format */}
-                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                                <p className="text-sm text-blue-800 font-semibold mb-1">Historical Format Note:</p>
-                                <p className="text-sm text-blue-700">
-                                    When using the 4-column format (Week,Income,Tax,Paycheck), the last week in your import will automatically calculate business expenses as the balancing figure to ensure everything adds up correctly.
+                            {/* Help text */}
+                            <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                                <p className="text-xs text-gray-600">
+                                    <strong>💡 Tip:</strong> The template shows example data. Delete the example rows and add your own weeks. Save as CSV when done.
                                 </p>
                             </div>
                         </div>
