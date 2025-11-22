@@ -980,6 +980,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [calculatedSplit, setCalculatedSplit] = useState(null);
             const [catchUpMode, setCatchUpMode] = useState(false);
             const [missingWeekIncomes, setMissingWeekIncomes] = useState({});
+            const [missingWeekTaxes, setMissingWeekTaxes] = useState({});
+            const [missingWeekPaychecks, setMissingWeekPaychecks] = useState({});
+            const [csvImportFormat, setCsvImportFormat] = useState(null); // '2-column' or '4-column'
             const [catchUpCsvFile, setCatchUpCsvFile] = useState(null);
             const [showQuarterlyWarning, setShowQuarterlyWarning] = useState(false);
             const [unpaidQuarters, setUnpaidQuarters] = useState([]);
@@ -1150,7 +1153,15 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     skipEmptyLines: true,
                     complete: (results) => {
                         try {
+                            // Detect CSV format by checking headers
+                            const headers = results.meta.fields || [];
+                            const hasTax = headers.some(h => h.toLowerCase() === 'tax');
+                            const hasPaycheck = headers.some(h => h.toLowerCase() === 'paycheck');
+                            const is4Column = hasTax && hasPaycheck;
+
                             const incomes = {};
+                            const taxes = {};
+                            const paychecks = {};
                             let errorMessages = [];
 
                             results.data.forEach((row, index) => {
@@ -1175,14 +1186,26 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     return;
                                 }
 
-                                // Check if this week is actually missing
-                                const isMissing = missingWeeks.some(w => w.week === week);
-                                if (!isMissing) {
-                                    errorMessages.push(`Row ${index + 2}: Week ${week} already has data or is in the future`);
-                                    return;
-                                }
-
                                 incomes[week] = income.toString();
+
+                                // Parse Tax and Paycheck if this is a 4-column import
+                                if (is4Column) {
+                                    const taxStr = (row.Tax || row.tax || '0').toString().trim();
+                                    const cleanedTax = taxStr.replace(/[$,\s]/g, '');
+                                    const tax = parseFloat(cleanedTax) || 0;
+
+                                    const paycheckStr = (row.Paycheck || row.paycheck || '0').toString().trim();
+                                    const cleanedPaycheck = paycheckStr.replace(/[$,\s]/g, '');
+                                    const paycheck = parseFloat(cleanedPaycheck) || 0;
+
+                                    if (tax < 0 || paycheck < 0) {
+                                        errorMessages.push(`Row ${index + 2}: Tax and Paycheck must be non-negative`);
+                                        return;
+                                    }
+
+                                    taxes[week] = tax.toString();
+                                    paychecks[week] = paycheck.toString();
+                                }
                             });
 
                             if (errorMessages.length > 0) {
@@ -1195,13 +1218,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 return;
                             }
 
-                            // Merge with existing incomes (CSV takes precedence)
-                            setMissingWeekIncomes(prev => ({
-                                ...prev,
-                                ...incomes
-                            }));
+                            // Set the import format
+                            setCsvImportFormat(is4Column ? '4-column' : '2-column');
 
-                            alert(`Successfully loaded ${Object.keys(incomes).length} week(s) from CSV!`);
+                            // Merge with existing data (CSV takes precedence)
+                            setMissingWeekIncomes(prev => ({ ...prev, ...incomes }));
+
+                            if (is4Column) {
+                                setMissingWeekTaxes(prev => ({ ...prev, ...taxes }));
+                                setMissingWeekPaychecks(prev => ({ ...prev, ...paychecks }));
+                                alert(`Successfully loaded ${Object.keys(incomes).length} week(s) from CSV in Historical format (4-column)!`);
+                            } else {
+                                alert(`Successfully loaded ${Object.keys(incomes).length} week(s) from CSV in Simple format (2-column)!`);
+                            }
 
                         } catch (error) {
                             alert('Error parsing CSV: ' + error.message);
@@ -1224,37 +1253,74 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 let runningWeeksElapsed = weeksElapsed;
                 let runningTaxBalance = taxSavingsBalance;
 
-                sortedEntries.forEach(([weekNum, income]) => {
+                // Check if this is a 4-column import (historical with actual amounts)
+                const is4ColumnImport = csvImportFormat === '4-column';
+                const lastWeekNum = sortedEntries.length > 0 ? sortedEntries[sortedEntries.length - 1][0] : null;
+
+                // If 4-column, calculate total pool for balancing
+                let totalIncome = 0;
+                let totalTax = 0;
+                let totalPaycheck = 0;
+
+                if (is4ColumnImport) {
+                    sortedEntries.forEach(([weekNum, income]) => {
+                        const incomeValue = parseFloat(income) || 0;
+                        const taxValue = parseFloat(missingWeekTaxes[weekNum]) || 0;
+                        const paycheckValue = parseFloat(missingWeekPaychecks[weekNum]) || 0;
+                        totalIncome += incomeValue;
+                        totalTax += taxValue;
+                        totalPaycheck += paycheckValue;
+                    });
+                }
+
+                sortedEntries.forEach(([weekNum, income], index) => {
                     const incomeValue = parseFloat(income);
                     if (!isNaN(incomeValue) && incomeValue > 0) {
-                        // Get the actual date of this week to calculate bills from that time
-                        const weekData = appData.weeks.find(w => w.week === parseInt(weekNum));
-                        const weekDate = new Date(weekData.date);
+                        const isLastWeek = is4ColumnImport && (weekNum === lastWeekNum);
 
-                        // Calculate business expenses using rolling 4-week method
-                        // As if entering this week on its actual date
-                        const rolling4Week = calculateRolling4WeekBusiness(
-                            weekDate,
-                            appData.expenses.budget,
-                            appData.expenses.dueDates
-                        );
+                        let business, tax, paycheck;
 
-                        // Cap business at 50% of income
-                        const business = Math.min(rolling4Week.weeklyAmount, incomeValue * 0.5);
+                        if (is4ColumnImport) {
+                            // Use actual tax and paycheck from CSV
+                            tax = parseFloat(missingWeekTaxes[weekNum]) || 0;
+                            paycheck = parseFloat(missingWeekPaychecks[weekNum]) || 0;
 
-                        // Calculate smart tax for this week
-                        const smartTax = calculateSmartTaxSavings(
-                            incomeValue,
-                            runningYtdIncome,
-                            runningWeeksElapsed,
-                            runningTaxBalance,
-                            quarterlyPaid,
-                            appData.settings
-                        );
+                            if (isLastWeek) {
+                                // Last week gets the balancing business amount
+                                business = totalIncome - totalTax - totalPaycheck;
+                            } else {
+                                // All other weeks: business = 0
+                                business = 0;
+                            }
+                        } else {
+                            // 2-column import: calculate splits normally
+                            const weekData = appData.weeks.find(w => w.week === parseInt(weekNum));
+                            const weekDate = new Date(weekData.date);
 
-                        // Cap tax at what's available (income - business)
-                        const tax = Math.min(smartTax.amount, incomeValue - business);
-                        const paycheck = incomeValue - business - tax;
+                            // Calculate business expenses using rolling 4-week method
+                            const rolling4Week = calculateRolling4WeekBusiness(
+                                weekDate,
+                                appData.expenses.budget,
+                                appData.expenses.dueDates
+                            );
+
+                            // Cap business at 50% of income
+                            business = Math.min(rolling4Week.weeklyAmount, incomeValue * 0.5);
+
+                            // Calculate smart tax for this week
+                            const smartTax = calculateSmartTaxSavings(
+                                incomeValue,
+                                runningYtdIncome,
+                                runningWeeksElapsed,
+                                runningTaxBalance,
+                                quarterlyPaid,
+                                appData.settings
+                            );
+
+                            // Cap tax at what's available (income - business)
+                            tax = Math.min(smartTax.amount, incomeValue - business);
+                            paycheck = incomeValue - business - tax;
+                        }
 
                         updateWeek(parseInt(weekNum), {
                             income: incomeValue,
@@ -1278,6 +1344,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                 setCatchUpMode(false);
                 setMissingWeekIncomes({});
+                setMissingWeekTaxes({});
+                setMissingWeekPaychecks({});
+                setCsvImportFormat(null);
             };
 
             return (
@@ -1359,11 +1428,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         <div className="bg-white rounded-lg shadow-md p-6 border-2 border-blue-500">
                             <h2 className="text-xl font-bold text-gray-800 mb-4">CATCH-UP MODE: ENTER MISSING WEEKS</h2>
                             <p className="text-gray-600 mb-4">
-                                Enter income for each week below, or upload a CSV file to bulk-import your data.
+                                Enter income for each week below. For bulk imports, see Settings → Import Historical Data.
                             </p>
 
-                            {/* Manual Entry Option - Now First */}
-                            <h3 className="font-semibold text-gray-800 mb-3">✍️ Option 1: Enter Manually</h3>
+                            {/* Manual Entry */}
+                            <h3 className="font-semibold text-gray-800 mb-3">✍️ Enter Income for Each Week</h3>
 
                             <div className="space-y-4 mb-6">
                                 {missingWeeks.map(week => (
@@ -1389,47 +1458,6 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         </div>
                                     </div>
                                 ))}
-                            </div>
-
-                            <div className="text-center text-gray-500 text-sm mb-4">- OR -</div>
-
-                            {/* CSV Upload Option - Now Second */}
-                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
-                                <h3 className="font-semibold text-gray-700 mb-2">📄 Option 2: Upload CSV File</h3>
-                                <p className="text-sm text-gray-600 mb-3">
-                                    Upload a CSV with columns: Week,Income
-                                </p>
-                                <div className="flex gap-3 items-center">
-                                    <label className="flex-1">
-                                        <input
-                                            type="file"
-                                            accept=".csv"
-                                            onChange={handleCatchUpCsvUpload}
-                                            className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-700 file:cursor-pointer"
-                                        />
-                                    </label>
-                                    <button
-                                        onClick={() => {
-                                            // Download template CSV
-                                            const template = 'Week,Income\n36,2500\n37,2800\n38,2600';
-                                            const blob = new Blob([template], { type: 'text/csv' });
-                                            const url = URL.createObjectURL(blob);
-                                            const a = document.createElement('a');
-                                            a.href = url;
-                                            a.download = 'catch-up-template.csv';
-                                            a.click();
-                                            URL.revokeObjectURL(url);
-                                        }}
-                                        className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors text-sm whitespace-nowrap"
-                                    >
-                                        Download Template
-                                    </button>
-                                </div>
-                                {catchUpCsvFile && (
-                                    <p className="text-sm text-green-700 mt-2">
-                                        ✓ Loaded: {catchUpCsvFile.name}
-                                    </p>
-                                )}
                             </div>
 
                             <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg mb-4">
@@ -1499,6 +1527,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     onClick={() => {
                                         setCatchUpMode(false);
                                         setMissingWeekIncomes({});
+                                        setMissingWeekTaxes({});
+                                        setMissingWeekPaychecks({});
+                                        setCsvImportFormat(null);
                                         setCatchUpCsvFile(null);
                                     }}
                                     className="flex-1 bg-gray-200 text-gray-700 px-4 py-3 rounded-lg hover:bg-gray-300 transition-colors"
@@ -2843,6 +2874,86 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             >
                                 🗑️ Clear All Data (Dangerous!)
                             </button>
+                        </div>
+                    </div>
+
+                    {/* Import Historical Data */}
+                    <div className="bg-white rounded-lg shadow-md p-6">
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">📥 IMPORT HISTORICAL DATA</h2>
+                        <p className="text-gray-600 mb-4">
+                            Bulk-import weeks from a CSV file. Useful for migrating from your old system.
+                        </p>
+
+                        <div className="space-y-4">
+                            {/* CSV Upload */}
+                            <div className="border border-gray-300 rounded-lg p-4">
+                                <h3 className="font-semibold text-gray-800 mb-2">Upload CSV File</h3>
+                                <p className="text-sm text-gray-600 mb-3">
+                                    Supports two formats:
+                                </p>
+                                <ul className="text-sm text-gray-600 mb-3 ml-6 space-y-1">
+                                    <li><strong>Simple:</strong> Week,Income (app calculates splits)</li>
+                                    <li><strong>Historical:</strong> Week,Income,Tax,Paycheck (uses actual amounts)</li>
+                                </ul>
+                                <label className="block">
+                                    <input
+                                        type="file"
+                                        accept=".csv"
+                                        onChange={handleCatchUpCsvUpload}
+                                        className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 file:cursor-pointer"
+                                    />
+                                </label>
+                                {catchUpCsvFile && (
+                                    <p className="text-sm text-green-700 mt-2">
+                                        ✓ Loaded: {catchUpCsvFile.name}
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Template Downloads */}
+                            <div className="border border-gray-300 rounded-lg p-4">
+                                <h3 className="font-semibold text-gray-800 mb-2">Download Templates</h3>
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => {
+                                            const template = 'Week,Income\n1,2500\n2,2800\n3,2600';
+                                            const blob = new Blob([template], { type: 'text/csv' });
+                                            const url = URL.createObjectURL(blob);
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            a.download = 'import-template-simple.csv';
+                                            a.click();
+                                            URL.revokeObjectURL(url);
+                                        }}
+                                        className="flex-1 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors text-sm"
+                                    >
+                                        Simple Template
+                                    </button>
+                                    <button
+                                        onClick={() => {
+                                            const template = 'Week,Income,Tax,Paycheck\n1,715.19,0,0\n2,2242.42,0,0\n8,2687.03,2000.00,7911.74';
+                                            const blob = new Blob([template], { type: 'text/csv' });
+                                            const url = URL.createObjectURL(blob);
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            a.download = 'import-template-historical.csv';
+                                            a.click();
+                                            URL.revokeObjectURL(url);
+                                        }}
+                                        className="flex-1 bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition-colors text-sm"
+                                    >
+                                        Historical Template
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Info about historical format */}
+                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                                <p className="text-sm text-blue-800 font-semibold mb-1">Historical Format Note:</p>
+                                <p className="text-sm text-blue-700">
+                                    When using the 4-column format (Week,Income,Tax,Paycheck), the last week in your import will automatically calculate business expenses as the balancing figure to ensure everything adds up correctly.
+                                </p>
+                            </div>
                         </div>
                     </div>
 
