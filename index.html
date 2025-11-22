@@ -523,8 +523,8 @@
             let csvContent;
             let filename;
 
-            // Check if user has existing budget data
-            const hasBudget = appData && Object.keys(appData.expenses.budget).length > 0;
+            // Check if user has existing budget data (with safe property access)
+            const hasBudget = appData && appData.expenses && appData.expenses.budget && Object.keys(appData.expenses.budget).length > 0;
 
             if (hasBudget) {
                 // Generate CSV from current budget
