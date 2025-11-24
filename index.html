@@ -262,7 +262,7 @@
             const jan4Day = jan4.getDay() || 7;
             const weekStart = new Date(year, 0, 4 - jan4Day + 1 + (weekNumber - 1) * 7);
             const friday = new Date(weekStart);
-            friday.setDate(weekStart.getDate() + 4);
+            friday.setDate(weekStart.getDate() + 5); // Add 5 days to get Friday
             return friday;
         }
 
