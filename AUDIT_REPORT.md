@@ -27,7 +27,7 @@ This is a **well-structured, functional application** with **correct tax calcula
 - ⚠️ Data loss risk (localStorage only, no automated backups)
 - ⚠️ Tax brackets hardcoded for 2025 (will become outdated)
 - ⚠️ Single filer assumption (not flexible for other filing statuses)
-- ⚠️ Missing SE tax wage base cap
+- ✅ ~~Missing SE tax wage base cap~~ **FIXED** (commit d21b28a)
 - ⚠️ Silent business expense capping
 
 ---
@@ -142,9 +142,11 @@ function calculateSelfEmploymentTax(netIncome) {
 - ✅ 0.9235 multiplier (accounts for employer-equivalent portion deduction)
 - ✅ 15.3% rate (12.4% Social Security + 2.9% Medicare)
 - ✅ 50% deductible
-- ⚠️ **MISSING:** Social Security wage base cap (~$168,600)
+- ✅ **FIXED:** Social Security wage base cap now implemented (commit d21b28a)
 
-**Critical Issue:** For high earners (>$168,600), this overstates SE tax because the Social Security portion (12.4%) should only apply to the first $168,600 of income. Medicare (2.9%) applies to all income, plus an additional 0.9% on income over $200,000.
+~~**Critical Issue:** For high earners (>$168,600), this overstates SE tax because the Social Security portion (12.4%) should only apply to the first $168,600 of income. Medicare (2.9%) applies to all income, plus an additional 0.9% on income over $200,000.~~
+
+**Resolution:** SE tax now correctly caps Social Security at $176,100 (2025 wage base), applies Medicare to all income, and adds Additional Medicare Tax (0.9%) for income over $200,000.
 
 ### 2.3 Income Tax Calculation (Lines 98-125)
 
@@ -850,64 +852,49 @@ const TAX_BRACKETS_2025 = [
 
 ---
 
-### Priority 4: MISSING SE TAX WAGE BASE CAP ⚠️⚠️
+### ~~Priority 4: MISSING SE TAX WAGE BASE CAP~~ ✅ FIXED (commit d21b28a)
 
-**Issue:** Overstates SE tax for high earners
+**Status:** ✅ **RESOLVED** on 2025-12-18
 
-**Location:** Lines 84-89 (calculateSelfEmploymentTax)
+**Original Issue:** Overstated SE tax for high earners by applying 15.3% to all income.
 
-**Impact:**
-- High earners (>$168,600) overpay tax savings
-- Less money for paycheck than necessary
-- Incorrect tax projections
+**Fix Implemented:**
+- Added `SE_TAX_2025` constants with proper rates and thresholds
+- Social Security (12.4%) now capped at $176,100 wage base (2025 limit)
+- Medicare (2.9%) applied to all income with no cap
+- Additional Medicare Tax (0.9%) added for income over $200,000
+- UI updated to show detailed SE tax breakdown
 
-**Current Calculation:**
+**New Calculation (Lines 94-122):**
 ```javascript
-const seTax = netIncome * 0.9235 * 0.153;  // Applies 15.3% to ALL income
+function calculateSelfEmploymentTax(netIncome) {
+    const seTaxBase = netIncome * SE_TAX_2025.seTaxBaseMultiplier;
+
+    // Social Security: 12.4% only up to wage base cap
+    const ssTaxableAmount = Math.min(seTaxBase, SE_TAX_2025.socialSecurityWageBase);
+    const ssTax = ssTaxableAmount * SE_TAX_2025.socialSecurityRate;
+
+    // Medicare: 2.9% on ALL income (no cap)
+    const medicareTax = seTaxBase * SE_TAX_2025.medicareRate;
+
+    // Additional Medicare Tax: 0.9% on income over threshold
+    let additionalMedicareTax = 0;
+    if (seTaxBase > SE_TAX_2025.additionalMedicareThreshold) {
+        additionalMedicareTax = (seTaxBase - SE_TAX_2025.additionalMedicareThreshold)
+                               * SE_TAX_2025.additionalMedicareRate;
+    }
+
+    const seTax = ssTax + medicareTax + additionalMedicareTax;
+    return { seTax, ssTax, medicareTax, additionalMedicareTax, ... };
+}
 ```
 
-**Correct Calculation (2025):**
-- Social Security: 12.4% up to $168,600 wage base
-- Medicare: 2.9% on all income
-- Additional Medicare: 0.9% on income over $200,000 (single) or $250,000 (married)
-
-**Recommendations:**
-1. **Split SE tax into components**
-   ```javascript
-   function calculateSelfEmploymentTax(netIncome, filingStatus) {
-       const seTaxBase = netIncome * 0.9235;
-
-       // Social Security (12.4% up to wage base)
-       const ssWageBase = 168600;  // 2025 value
-       const ssTax = Math.min(seTaxBase, ssWageBase) * 0.124;
-
-       // Medicare (2.9% on all)
-       let medicareTax = seTaxBase * 0.029;
-
-       // Additional Medicare (0.9% over threshold)
-       const additionalMedicareThreshold = filingStatus === 'married' ? 250000 : 200000;
-       if (seTaxBase > additionalMedicareThreshold) {
-           medicareTax += (seTaxBase - additionalMedicareThreshold) * 0.009;
-       }
-
-       const seTax = ssTax + medicareTax;
-       const seTaxDeduction = seTax * 0.5;
-
-       return { seTax, ssTax, medicareTax, seTaxDeduction, seTaxBase };
-   }
-   ```
-
-2. **Update wage base annually**
-   - Store in constants by year
-   - Update with tax brackets
-
-**Example Impact:**
-- Income: $200,000
-- Current calculation: $28,237 SE tax
-- Correct calculation: $25,984 SE tax
-- **Difference: $2,253 overstated**
-
-**Impact if not fixed:** High earners save too much for taxes, reducing available paycheck unnecessarily.
+**Verified Impact:**
+| Income | Old SE Tax | New SE Tax | Savings |
+|--------|-----------|-----------|---------|
+| $100k | $14,130 | $14,130 | $0 |
+| $200k | $28,259 | $27,192 | $1,067 |
+| $250k | $35,324 | $32,790 | $2,534 |
 
 ---
 
@@ -1174,10 +1161,10 @@ const validateImportedData = (data) => {
 - [ ] Add data loss warning banner
 - [ ] Show "Last backup: X days ago" in Settings
 
-**2. Tax Accuracy** ⚠️⚠️
-- [ ] Add SE tax wage base cap ($168,600 SS, unlimited Medicare)
-- [ ] Split SE tax into SS + Medicare components
-- [ ] Add Additional Medicare Tax (0.9% over threshold)
+**2. Tax Accuracy** ✅ FIXED
+- [x] Add SE tax wage base cap ($176,100 SS for 2025, unlimited Medicare) ✅ commit d21b28a
+- [x] Split SE tax into SS + Medicare components ✅ commit d21b28a
+- [x] Add Additional Medicare Tax (0.9% over threshold) ✅ commit d21b28a
 
 **3. Filing Status** ⚠️⚠️
 - [ ] Add filing status selector (Single, Married, HoH)
@@ -1249,7 +1236,7 @@ This application demonstrates **solid financial logic and good UX design** for i
 **However**, several critical issues must be addressed before this can be safely relied upon for real financial planning:
 
 1. **Data loss prevention** is the #1 priority
-2. **Tax accuracy gaps** (SE tax cap, filing status) could lead to significant errors
+2. **Tax accuracy gaps** (~~SE tax cap~~ ✅, filing status) could lead to significant errors
 3. **Future-proofing** (tax year management) is essential for longevity
 4. **User warnings** would prevent costly mistakes
 
@@ -1262,7 +1249,7 @@ This application demonstrates **solid financial logic and good UX design** for i
 
 **Not recommended for:**
 - Married filers (incorrect brackets/deductions)
-- High earners >$168k (SE tax overstated)
+- ~~High earners >$168k (SE tax overstated)~~ ✅ FIXED
 - Users who won't backup regularly
 - Year 2026+ without code updates
 
@@ -1279,8 +1266,9 @@ This application demonstrates **solid financial logic and good UX design** for i
 - 45-53: TAX_BRACKETS_2025 constants
 - 55-60: QUARTERLY_PAYMENTS_2025 constants
 - 62-70: DEFAULT_SETTINGS
-- 84-89: calculateSelfEmploymentTax()
-- 98-125: calculateIncomeTax()
+- 72-80: SE_TAX_2025 constants (NEW - wage base, rates, thresholds)
+- 94-122: calculateSelfEmploymentTax() (UPDATED - with wage base cap)
+- 124-157: calculateIncomeTax()
 - 160-234: calculateSmartTaxSavings()
 - 336-396: calculateRolling4WeekBusiness()
 - 402-427: localStorage save/load functions
