@@ -611,19 +611,29 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 const savedData = loadFromLocalStorage();
 
                 if (savedData && savedData.settings && savedData.settings.setupComplete) {
-                    // Migrate week dates to use correct Friday calculation
-                    const migratedData = {
-                        ...savedData,
-                        weeks: savedData.weeks.map((week, i) => ({
-                            ...week,
-                            date: getFridayOfWeek(i + 1, 2025).toISOString().split('T')[0]
-                        }))
-                    };
-                    setAppData(migratedData);
+                    let data = savedData;
+
+                    // Migration: v1 -> v2 (fix week dates to Friday)
+                    if ((data.dataVersion || 1) < 2) {
+                        data = {
+                            ...data,
+                            dataVersion: 2,
+                            weeks: data.weeks.map((week, i) => ({
+                                ...week,
+                                date: getFridayOfWeek(i + 1, 2025).toISOString().split('T')[0]
+                            }))
+                        };
+                    }
+
+                    // Future migrations go here:
+                    // if (data.dataVersion < 3) { ... }
+
+                    setAppData(data);
                     setIsSetupComplete(true);
                 } else {
                     // Initialize with default data
                     const initialData = {
+                        dataVersion: 2,
                         settings: { ...DEFAULT_SETTINGS, setupComplete: false },
                         expenses: {
                             budget: {},
