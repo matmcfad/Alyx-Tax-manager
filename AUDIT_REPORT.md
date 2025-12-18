@@ -15,8 +15,33 @@ This is a **well-structured, functional application** with **correct tax calcula
 
 ### Overall Assessment: 7.5/10 Production Readiness
 
+---
+
+## ⚠️ CRITICAL UPDATE - December 18, 2025
+
+### MAJOR TAX CALCULATION ERROR DISCOVERED AND FIXED
+
+The original audit **MISSED TWO CRITICAL DEDUCTIONS** that caused a **27% tax overstatement**:
+
+| Issue | Impact | Status |
+|-------|--------|--------|
+| Missing QBI Deduction (Section 199A) | ~$17,319 deduction missing | ✅ **FIXED** (commit e73f0a4) |
+| Business Expenses Not Deducted for Tax | ~$17,519 deduction missing | ✅ **FIXED** (commit e73f0a4) |
+| **Total Error** | **$7,110 overstated (27%)** | ✅ **FIXED** |
+
+**Before Fix:** App calculated ~$32,772 tax on $108k income
+**After Fix:** App calculates ~$25,662 tax (matches actual 2024 return)
+
+**Root Causes:**
+1. QBI (Qualified Business Income) deduction was completely missing - therapists can deduct 20% of QBI under Section 199A
+2. Tax was calculated on GROSS income instead of NET profit (gross - business expenses)
+
+**This was a critical failure of the audit process.** The original assessment that tax calculations were "accurate" was incorrect.
+
+---
+
 **Strengths:**
-- ✅ Accurate 2025 tax calculations (SE tax, progressive brackets, deductions)
+- ✅ Accurate 2025 tax calculations (SE tax, progressive brackets, deductions, **QBI**)
 - ✅ Smart tax savings algorithm that adapts to income pace
 - ✅ Comprehensive data export/import capabilities
 - ✅ Good user experience with validation and error messages
