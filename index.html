@@ -758,6 +758,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             // Refs for non-reactive data
             const syncTimeoutRef = useRef(null);
+            const lastSyncedDataRef = useRef(null); // Track last synced data to prevent redundant syncs
             const syncQueueRef = useRef({
                 isProcessing: false,
                 pendingOperation: null  // 'push' | 'pull' | null
@@ -965,6 +966,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 try {
                     if (operation === 'push' && appData) {
                         await uploadToDrive(appData);
+                        // Record what we synced to prevent redundant syncs
+                        lastSyncedDataRef.current = JSON.stringify(appData);
                     } else if (operation === 'pull') {
                         const backup = await downloadFromDrive();
                         if (backup && backup.data) {
@@ -972,6 +975,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             if (backup.data.settings && backup.data.weeks) {
                                 setAppData(backup.data);
                                 localStorage.setItem('lastKnownDriveModifiedTime', backup.modifiedTime);
+                                // Record pulled data as synced
+                                lastSyncedDataRef.current = JSON.stringify(backup.data);
                             } else {
                                 throw new Error('Invalid backup data structure');
                             }
@@ -1253,12 +1258,21 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return;
                 }
 
+                // Check if data actually changed since last sync
+                const currentDataStr = JSON.stringify(appData);
+                if (currentDataStr === lastSyncedDataRef.current) {
+                    return; // No actual changes, skip sync
+                }
+
                 if (syncTimeoutRef.current) {
                     clearTimeout(syncTimeoutRef.current);
                 }
 
                 syncTimeoutRef.current = setTimeout(() => {
-                    queueSync('push');
+                    // Double-check data still differs before syncing
+                    if (JSON.stringify(appData) !== lastSyncedDataRef.current) {
+                        queueSync('push');
+                    }
                 }, SYNC_DEBOUNCE_MS);
 
                 return () => {
