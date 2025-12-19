@@ -881,7 +881,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             // Silent refresh failed - clear the connected flag and show reconnect prompt
                             localStorage.setItem('googleConnected', 'false');
                             setDriveStatus('disconnected');
-                            setSyncError('Session expired. Please reconnect to Google Drive.');
+                            setSyncError('Session expired. Please reconnect to Google in Settings.');
                         } else if (error.type === 'popup_closed') {
                             // User closed the popup during manual sign-in
                             setDriveStatus('disconnected');
