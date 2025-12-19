@@ -3787,23 +3787,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             return;
                         }
 
-                        // If connected to Drive, delete existing backup first
-                        if (driveStatus !== 'disconnected' && googleAccessToken) {
-                            try {
-                                const existingFile = await findBackupFile();
-                                if (existingFile) {
-                                    await driveApiRequest(`files/${existingFile.id}`, {
-                                        method: 'DELETE'
-                                    });
-                                }
-                                // Clear the timestamp so auto-sync will push the new data
-                                localStorage.removeItem('lastKnownDriveModifiedTime');
-                            } catch (error) {
-                                console.error('Error deleting old Drive backup:', error);
-                            }
-                        }
-
-                        // Import the data - auto-sync useEffect will push to Drive
+                        // Import the data - auto-sync useEffect will overwrite Drive backup
                         setAppData(data);
                         alert('Backup imported successfully!');
                     } catch (error) {
