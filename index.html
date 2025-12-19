@@ -979,6 +979,18 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 return data.files && data.files.length > 0 ? data.files[0] : null;
             }, [driveApiRequest]);
 
+            // Get Drive backup metadata only (for conflict detection)
+            const getDriveBackupMetadata = useCallback(async () => {
+                const existingFile = await findBackupFile();
+                if (!existingFile) {
+                    return null;
+                }
+                return {
+                    id: existingFile.id,
+                    modifiedTime: existingFile.modifiedTime
+                };
+            }, [findBackupFile]);
+
             // Upload or update backup file to Drive
             const uploadBackupToDrive = useCallback(async (data) => {
                 const existingFile = await findBackupFile();
@@ -1005,13 +1017,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                 if (existingFile) {
                     // Update existing file
-                    endpoint = `https://www.googleapis.com/upload/drive/v3/files/${existingFile.id}?uploadType=multipart`;
+                    endpoint = `https://www.googleapis.com/upload/drive/v3/files/${existingFile.id}?uploadType=multipart&fields=id,modifiedTime`;
                     method = 'PATCH';
                 } else {
                     // Create new file in appDataFolder
                     metadata.parents = ['appDataFolder'];
                     form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-                    endpoint = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+                    endpoint = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime';
                     method = 'POST';
                 }
 
@@ -1028,7 +1040,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     throw new Error(error.error?.message || 'Upload failed');
                 }
 
-                return response.json();
+                const result = await response.json();
+
+                // Store Drive's server timestamp for conflict detection
+                localStorage.setItem('lastKnownDriveModifiedTime', result.modifiedTime);
+
+                return result;
             }, [findBackupFile, ensureValidToken]);
 
             // Download backup file content from Drive
@@ -1175,6 +1192,65 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 };
             }, [appData, driveStatus, googleAccessToken, performSync]);
 
+            // Check for newer data in Drive on app open (conflict detection)
+            useEffect(() => {
+                const checkForNewerDriveData = async () => {
+                    // Only check if we're connected to Google and have local data
+                    if (!googleAccessToken || !appData?.settings?.setupComplete) {
+                        return;
+                    }
+
+                    try {
+                        const driveMetadata = await getDriveBackupMetadata();
+                        if (!driveMetadata) {
+                            return; // No backup in Drive
+                        }
+
+                        const lastKnown = localStorage.getItem('lastKnownDriveModifiedTime');
+
+                        if (!lastKnown) {
+                            // First time checking - store current and continue
+                            localStorage.setItem('lastKnownDriveModifiedTime', driveMetadata.modifiedTime);
+                            return;
+                        }
+
+                        // Compare timestamps
+                        const driveTime = new Date(driveMetadata.modifiedTime);
+                        const lastKnownTime = new Date(lastKnown);
+
+                        if (driveTime > lastKnownTime) {
+                            // Drive has newer data - another device updated
+                            const timeDiff = Math.round((driveTime - lastKnownTime) / 1000 / 60); // minutes
+                            const timeAgo = timeDiff < 60
+                                ? `${timeDiff} minutes ago`
+                                : `${Math.round(timeDiff / 60)} hours ago`;
+
+                            const loadNewer = confirm(
+                                `Newer data found in cloud (updated ${timeAgo}).\n\n` +
+                                `This may be from another device.\n\n` +
+                                `Load the newer data?`
+                            );
+
+                            if (loadNewer) {
+                                const backup = await downloadBackupFromDrive();
+                                if (backup && backup.data) {
+                                    setAppData(backup.data);
+                                    localStorage.setItem('lastKnownDriveModifiedTime', driveMetadata.modifiedTime);
+                                    setLastSyncTime(new Date());
+                                }
+                            } else {
+                                // User chose to keep local - push local to Drive
+                                await performSync('push');
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error checking for newer Drive data:', error);
+                    }
+                };
+
+                checkForNewerDriveData();
+            }, [googleAccessToken, appData?.settings?.setupComplete, getDriveBackupMetadata, downloadBackupFromDrive, performSync]);
+
             // ================================================================
             // END GOOGLE DRIVE SYNC FUNCTIONS
             // ================================================================
@@ -1209,7 +1285,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             return (
                 <div className="min-h-screen bg-gray-50">
-                    <Navigation currentScreen={currentScreen} setCurrentScreen={setCurrentScreen} />
+                    <Navigation
+                        currentScreen={currentScreen}
+                        setCurrentScreen={setCurrentScreen}
+                        driveStatus={driveStatus}
+                        isOnline={isOnline}
+                        pendingSync={pendingSync}
+                    />
 
                     <div className="container mx-auto px-4 py-6 max-w-4xl">
                         {currentScreen === 'dashboard' && (
@@ -1236,7 +1318,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 isOnline={isOnline}
                                 handleGoogleSignIn={handleGoogleSignIn}
                                 handleGoogleSignOut={handleGoogleSignOut}
-                                performSync={performSync}
+                                findBackupFile={findBackupFile}
+                                driveApiRequest={driveApiRequest}
+                                googleAccessToken={googleAccessToken}
                             />
                         )}
                     </div>
@@ -1248,7 +1332,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
         // NAVIGATION COMPONENT
         // ============================================================================
 
-        function Navigation({ currentScreen, setCurrentScreen }) {
+        function Navigation({ currentScreen, setCurrentScreen, driveStatus, isOnline, pendingSync }) {
             const navItems = [
                 { id: 'dashboard', label: 'Dashboard', icon: '📊' },
                 { id: 'history', label: 'History', icon: '📅' },
@@ -1260,21 +1344,50 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             return (
                 <nav className="bg-white shadow-md sticky top-0 z-50">
                     <div className="container mx-auto px-4">
-                        <div className="flex space-x-1 overflow-x-auto">
-                            {navItems.map(item => (
-                                <button
-                                    key={item.id}
-                                    onClick={() => setCurrentScreen(item.id)}
-                                    className={`px-4 py-3 whitespace-nowrap font-medium transition-colors ${
-                                        currentScreen === item.id
-                                            ? 'text-blue-600 border-b-2 border-blue-600'
-                                            : 'text-gray-600 hover:text-blue-600'
-                                    }`}
-                                >
-                                    <span className="mr-2">{item.icon}</span>
-                                    {item.label}
-                                </button>
-                            ))}
+                        <div className="flex items-center justify-between">
+                            <div className="flex space-x-1 overflow-x-auto">
+                                {navItems.map(item => (
+                                    <button
+                                        key={item.id}
+                                        onClick={() => setCurrentScreen(item.id)}
+                                        className={`px-4 py-3 whitespace-nowrap font-medium transition-colors ${
+                                            currentScreen === item.id
+                                                ? 'text-blue-600 border-b-2 border-blue-600'
+                                                : 'text-gray-600 hover:text-blue-600'
+                                        }`}
+                                    >
+                                        <span className="mr-2">{item.icon}</span>
+                                        {item.label}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Sync Status Indicator */}
+                            {driveStatus !== 'disconnected' && (
+                                <div className="flex items-center gap-2 px-3" title={
+                                    driveStatus === 'syncing' ? 'Syncing...' :
+                                    driveStatus === 'error' ? 'Sync error' :
+                                    pendingSync ? 'Changes pending' :
+                                    !isOnline ? 'Offline' :
+                                    'Synced to Google Drive'
+                                }>
+                                    <div className={`w-2.5 h-2.5 rounded-full ${
+                                        driveStatus === 'syncing' ? 'bg-blue-500 animate-pulse' :
+                                        driveStatus === 'error' ? 'bg-red-500' :
+                                        pendingSync ? 'bg-yellow-500' :
+                                        !isOnline ? 'bg-yellow-500' :
+                                        'bg-green-500'
+                                    }`}></div>
+                                    {(driveStatus === 'syncing' || driveStatus === 'error' || pendingSync || !isOnline) && (
+                                        <span className="text-xs text-gray-500">
+                                            {driveStatus === 'syncing' ? 'Syncing' :
+                                             driveStatus === 'error' ? 'Error' :
+                                             pendingSync ? 'Pending' :
+                                             'Offline'}
+                                        </span>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
                 </nav>
@@ -3413,7 +3526,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             isOnline,
             handleGoogleSignIn,
             handleGoogleSignOut,
-            performSync
+            findBackupFile,
+            driveApiRequest,
+            googleAccessToken
         }) {
             const [editMode, setEditMode] = useState(false);
             const [formData, setFormData] = useState({
@@ -3472,13 +3587,38 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 alert('Settings saved! ✓');
             };
 
-            const handleClearData = () => {
-                if (confirm('Are you sure you want to clear ALL data? This cannot be undone!')) {
-                    if (confirm('Really sure? This will delete everything!')) {
-                        localStorage.removeItem(STORAGE_KEY);
-                        window.location.reload();
+            const handleClearData = async () => {
+                if (!confirm('Are you sure you want to clear ALL data? This cannot be undone!')) {
+                    return;
+                }
+                if (!confirm('This will delete your local data AND your Google Drive backup. Really sure?')) {
+                    return;
+                }
+
+                // If connected to Google Drive, delete the backup file
+                if (driveStatus !== 'disconnected' && googleAccessToken) {
+                    try {
+                        const existingFile = await findBackupFile();
+                        if (existingFile) {
+                            await driveApiRequest(`files/${existingFile.id}`, {
+                                method: 'DELETE'
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Error deleting Drive backup:', error);
+                        // Continue with local clear even if Drive delete fails
                     }
                 }
+
+                // Clear all localStorage
+                localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem('googleConnected');
+                localStorage.removeItem('googleTokenExpiry');
+                localStorage.removeItem('pendingDriveSync');
+                localStorage.removeItem('lastKnownDriveModifiedTime');
+
+                // Reload to fresh state
+                window.location.reload();
             };
 
             const handleCatchUpCsvUpload = (event) => {
@@ -3625,7 +3765,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 if (!file) return;
 
                 const reader = new FileReader();
-                reader.onload = (event) => {
+                reader.onload = async (event) => {
                     try {
                         const data = JSON.parse(event.target.result);
 
@@ -3637,14 +3777,35 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         if (importVersion !== STORAGE_VERSION && importVersion !== 'unknown') {
                             const proceed = confirm(
                                 `This backup is from version ${importVersion}, but you're running version ${STORAGE_VERSION}.\n\n` +
-                                `The import may work, but there could be compatibility issues.\n\n` +
                                 `Do you want to proceed?`
                             );
                             if (!proceed) return;
                         }
 
+                        // Confirm import will overwrite everything
+                        if (!confirm('This will replace all your current data (local and cloud). Continue?')) {
+                            return;
+                        }
+
+                        // If connected to Drive, delete existing backup first
+                        if (driveStatus !== 'disconnected' && googleAccessToken) {
+                            try {
+                                const existingFile = await findBackupFile();
+                                if (existingFile) {
+                                    await driveApiRequest(`files/${existingFile.id}`, {
+                                        method: 'DELETE'
+                                    });
+                                }
+                                // Clear the timestamp so auto-sync will push the new data
+                                localStorage.removeItem('lastKnownDriveModifiedTime');
+                            } catch (error) {
+                                console.error('Error deleting old Drive backup:', error);
+                            }
+                        }
+
+                        // Import the data - auto-sync useEffect will push to Drive
                         setAppData(data);
-                        alert(`Backup imported successfully! ✓${importVersion !== 'unknown' ? `\n(Version: ${importVersion})` : ''}`);
+                        alert('Backup imported successfully!');
                     } catch (error) {
                         alert('Error importing backup. Please check the file format.');
                         console.error('Import error:', error);
@@ -3959,28 +4120,6 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         <p className="text-sm text-red-700">{syncError}</p>
                                     </div>
                                 )}
-
-                                {/* Action buttons */}
-                                <div className="grid grid-cols-2 gap-3">
-                                    <button
-                                        onClick={() => performSync('push')}
-                                        disabled={driveStatus === 'syncing' || !isOnline}
-                                        className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                                    >
-                                        Backup Now
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            if (confirm('This will replace your local data with the cloud backup. Continue?')) {
-                                                performSync('pull');
-                                            }
-                                        }}
-                                        disabled={driveStatus === 'syncing' || !isOnline}
-                                        className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                                    >
-                                        Restore from Cloud
-                                    </button>
-                                </div>
 
                                 {/* Disconnect button */}
                                 <button
