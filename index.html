@@ -874,9 +874,16 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     },
                     error_callback: (error) => {
                         console.error('Token client error:', error);
-                        // If silent refresh failed (popup blocked/closed), just show disconnected
-                        // so user sees a clean "Connect" button rather than an error
-                        if (error.type === 'popup_closed' || error.type === 'popup_failed_to_open') {
+                        // Check if this was a silent refresh attempt that failed
+                        const wasConnected = localStorage.getItem('googleConnected') === 'true';
+
+                        if (wasConnected) {
+                            // Silent refresh failed - clear the connected flag and show reconnect prompt
+                            localStorage.setItem('googleConnected', 'false');
+                            setDriveStatus('disconnected');
+                            setSyncError('Session expired. Please reconnect to Google Drive.');
+                        } else if (error.type === 'popup_closed') {
+                            // User closed the popup during manual sign-in
                             setDriveStatus('disconnected');
                         } else {
                             setDriveStatus('error');
