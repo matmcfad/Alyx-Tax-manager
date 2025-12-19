@@ -573,10 +573,22 @@
                     ...data
                 };
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(saveData));
-                return true;
+                return { success: true };
             } catch (error) {
                 console.error('Error saving to localStorage:', error);
-                return false;
+
+                // Detect quota exceeded error
+                const isQuotaError = error.name === 'QuotaExceededError' ||
+                    error.code === 22 || // Legacy Chrome
+                    (error.code === 1014 && error.name === 'NS_ERROR_DOM_QUOTA_REACHED'); // Firefox
+
+                return {
+                    success: false,
+                    error: isQuotaError ? 'quota' : 'unknown',
+                    message: isQuotaError
+                        ? 'Storage full. Please export a backup and clear old data.'
+                        : 'Failed to save data locally.'
+                };
             }
         }
 
@@ -1321,6 +1333,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [appData, setAppData] = useState(null);
             const [isSetupComplete, setIsSetupComplete] = useState(false);
             const [setupStep, setSetupStep] = useState(1);
+            const [storageError, setStorageError] = useState(null);
 
             // Use centralized sync manager
             const syncManager = useSyncManager(appData, setAppData);
@@ -1401,7 +1414,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             // Save data whenever it changes
             useEffect(() => {
                 if (appData) {
-                    saveToLocalStorage(appData);
+                    const result = saveToLocalStorage(appData);
+                    if (!result.success) {
+                        setStorageError(result.message);
+                    } else if (storageError) {
+                        setStorageError(null); // Clear error on successful save
+                    }
                 }
             }, [appData]);
 
@@ -1475,6 +1493,18 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         isOnline={isOnline}
                         pendingSync={pendingSync}
                     />
+
+                    {storageError && (
+                        <div className="bg-red-600 text-white px-4 py-3 text-center">
+                            <span className="font-medium">⚠️ {storageError}</span>
+                            <button
+                                onClick={() => setCurrentScreen('settings')}
+                                className="ml-4 underline hover:no-underline"
+                            >
+                                Go to Settings
+                            </button>
+                        </div>
+                    )}
 
                     <div className="container mx-auto px-4 py-6 max-w-4xl">
                         {currentScreen === 'dashboard' && (
