@@ -874,14 +874,52 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     },
                     error_callback: (error) => {
                         console.error('Token client error:', error);
-                        setDriveStatus('error');
-                        setSyncError(error.message || 'Connection failed');
+                        // If silent refresh failed (popup blocked/closed), just show disconnected
+                        // so user sees a clean "Connect" button rather than an error
+                        if (error.type === 'popup_closed' || error.type === 'popup_failed_to_open') {
+                            setDriveStatus('disconnected');
+                        } else {
+                            setDriveStatus('error');
+                            setSyncError(error.message || 'Connection failed');
+                        }
                     }
                 });
 
                 tokenClientRef.current = tokenClient;
                 return tokenClient;
             }, []);
+
+            // Restore Google connection on page load
+            useEffect(() => {
+                const restoreGoogleConnection = () => {
+                    // Check if user was previously connected
+                    const wasConnected = localStorage.getItem('googleConnected') === 'true';
+                    if (!wasConnected) {
+                        return; // User never connected or explicitly disconnected
+                    }
+
+                    // Check if Google APIs are loaded
+                    if (!window.google?.accounts?.oauth2) {
+                        // APIs not ready yet, try again in a moment
+                        setTimeout(restoreGoogleConnection, 500);
+                        return;
+                    }
+
+                    // Try to silently get a new access token
+                    const tokenClient = initializeGoogleAuth();
+                    if (!tokenClient) {
+                        return;
+                    }
+
+                    setDriveStatus('connecting');
+
+                    // Request token silently (no popup)
+                    // prompt: '' means silent refresh - only works if user's Google session is active
+                    tokenClient.requestAccessToken({ prompt: '' });
+                };
+
+                restoreGoogleConnection();
+            }, [initializeGoogleAuth]);
 
             // Sign in with Google
             const handleGoogleSignIn = useCallback(() => {
