@@ -1292,17 +1292,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     const result = await checkForUpdates();
 
                     if (result.hasUpdates) {
-                        const loadNewer = confirm(
-                            `Newer data found in cloud (updated ${result.timeAgo}).\n\n` +
-                            `This may be from another device.\n\n` +
-                            `Load the newer data?`
-                        );
-
-                        if (loadNewer) {
-                            await queueSync('pull');
-                        } else {
-                            await queueSync('push');
-                        }
+                        // Always use remote data - Drive is the source of truth
+                        await queueSync('pull');
                     }
 
                     // Also handle pending sync after restore
