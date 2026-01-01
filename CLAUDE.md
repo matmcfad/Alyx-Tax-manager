@@ -6,7 +6,14 @@ A Progressive Web App for managing weekly income, business expenses, and tax sav
 
 **Who it's for:** One person - Alyx Steadman Therapy PLLC
 
-**Why it matters:** This application calculates tax liability, tracks quarterly estimated payments, and manages financial records. Errors directly impact real money and IRS compliance.
+**Who is the user?** A self-employed therapist who:
+Gets paid weekly (variable income)
+Needs to save for quarterly estimated tax payments
+Needs to know how much they can safely pay themselves
+Wants to avoid underpaying (penalties) or overpaying (cash flow problems)
+Probably anxious about taxes and wants clarity/confidence
+
+**Why it matters:** This application calculates tax liability, tracks quarterly estimated payments, and manages financial records. Errors directly impact real money and IRS compliance. IT also decides how much they get to pay 
 
 ---
 
