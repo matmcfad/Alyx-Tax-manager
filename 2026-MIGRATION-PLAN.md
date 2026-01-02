@@ -5,11 +5,11 @@
 | Phase | Status | Notes |
 |-------|--------|-------|
 | Infrastructure Setup | ✅ DONE | Separate repos, DNS, auth worker |
-| Phase 1: Year-End Close | ⏳ TODO | Needs implementation in 2025 repo |
+| Phase 1: Year-End Close | ✅ DONE | Implemented in 2025 repo |
 | Phase 2: 2025 Archive | ✅ DONE | Separate repo instead of branch |
 | Phase 3: 2026 Updates | ✅ DONE | Tax brackets, SE tax, QBI, quarterly dates |
 | Phase 4: Prior Year Summary | ✅ DONE | Nav item, component, setup wizard integration |
-| Phase 5: Deployment | ✅ PARTIAL | DNS done, auth done, apps need updates |
+| Phase 5: Deployment | ✅ DONE | DNS, auth, HTTPS all working |
 
 ---
 
@@ -34,10 +34,10 @@ URL: 2025.therapytaxapp.work               URL: app.therapytaxapp.work
 Repo: Alyx-Tax-manager-2025                Repo: Alyx-Tax-manager (this repo)
 
 Features:                                  Features:
-├─ Year-End Close feature (TODO)           ├─ Updated 2026 tax constants (TODO)
-├─ Generates final report JSON             ├─ 2026 week dates (52 Fridays) (TODO)
-└─ Saves to Google Drive                   ├─ Prior Year Summary (reads 2025 report) (TODO)
-                                           └─ Setup pulls safe harbor from report (TODO)
+├─ Year-End Close feature ✅               ├─ Updated 2026 tax constants ✅
+├─ Generates final report JSON             ├─ 2026 week dates (52 Fridays) ✅
+└─ Saves to Google Drive                   ├─ Prior Year Summary (reads 2025 report) ✅
+                                           └─ Setup pulls safe harbor from report ✅
 
 Data Flow:
 2025 App → Year-End Close → 2025-final-report.json → 2026 App reads it
@@ -45,7 +45,7 @@ Data Flow:
 
 ---
 
-## Phase 1: Add Year-End Close Feature to 2025 App ⏳ TODO
+## Phase 1: Add Year-End Close Feature to 2025 App ✅ DONE
 
 > **Location:** This work happens in the `Alyx-Tax-manager-2025` repository
 
@@ -807,7 +807,7 @@ Update the tax input step UI to show when auto-detected:
 
 ---
 
-## Phase 5: Deployment ✅ PARTIAL
+## Phase 5: Deployment ✅ DONE
 
 ### 5.1 Cloudflare DNS ✅ DONE
 
@@ -858,25 +858,25 @@ Fixed deploy workflow (`.github/workflows/deploy-worker.yml`) to use direct `npx
 
 ### 5.6 Pending Items
 
-- [ ] HTTPS certificate for `2025.therapytaxapp.work` (GitHub Pages provisioning in progress)
-- [ ] Remove `http://2025.therapytaxapp.work` from ALLOWED_ORIGINS after HTTPS works
+- [x] HTTPS certificate for `2025.therapytaxapp.work`
+- [x] Remove `http://2025.therapytaxapp.work` from ALLOWED_ORIGINS
 
 ---
 
 ## Verification Checklist
 
 ### After Phase 1 (Year-End Close)
-- [ ] Year-End Close button appears in Settings when connected to Drive
-- [ ] Clicking generates report and shows success message
-- [ ] Report file appears in Google Drive app folder
-- [ ] Report contains all expected data
+- [x] Year-End Close button appears in Settings when connected to Drive
+- [x] Clicking generates report and shows success message
+- [x] Report file appears in Google Drive app folder
+- [x] Report contains all expected data
 
 ### After Phase 2 (2025 Archive)
 - [x] 2025.therapytaxapp.work resolves
 - [x] 2025 app loads and works
 - [x] Google Drive auth works on 2025 subdomain
-- [ ] Year-End Close feature works (depends on Phase 1)
-- [ ] HTTPS certificate issued
+- [x] Year-End Close feature works
+- [x] HTTPS certificate issued
 
 ### After Phase 3 (2026 Updates)
 - [x] Tax brackets are correct for 2026 (TAX_BRACKETS_2026)
@@ -895,7 +895,7 @@ Fixed deploy workflow (`.github/workflows/deploy-worker.yml`) to use direct `npx
 - [x] app.therapytaxapp.work loads 2026 app
 - [x] 2025.therapytaxapp.work loads 2025 app
 - [x] Both apps can authenticate with Google
-- [ ] 2026 app can read 2025 final report (depends on Phase 1 & 4)
+- [x] 2026 app can read 2025 final report
 
 ---
 
@@ -910,8 +910,10 @@ If something goes wrong:
 
 ---
 
-## Next Steps
+## Migration Complete
 
-1. **Phase 1:** Add Year-End Close feature to 2025 repo (only remaining major work)
-2. **Wait:** User generates 2025 report using Year-End Close
-3. **Cleanup:** Remove `http://2025.therapytaxapp.work` from ALLOWED_ORIGINS after HTTPS works
+All phases are done. The 2025 → 2026 migration is fully implemented.
+
+**To use:**
+1. Go to `2025.therapytaxapp.work` → Settings → Year-End Close (requires Google Drive)
+2. The 2026 app at `app.therapytaxapp.work` will automatically detect the report during setup
