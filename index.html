@@ -1194,7 +1194,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const connect = useCallback(() => {
                 updateSyncState({ status: 'connecting', error: null });
                 // Redirect to Worker OAuth flow - will redirect back with ?auth=success
-                window.location.href = `${AUTH_WORKER_URL}/auth/login`;
+                window.location.href = `${AUTH_WORKER_URL}/auth/login?origin=${encodeURIComponent(window.location.origin)}`;
             }, [updateSyncState]);
 
             // Public API: Disconnect from Google
@@ -1975,7 +1975,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 setGoogleSignInStatus('signing-in');
                 setGoogleSignInError(null);
                 // Redirect to Worker OAuth flow
-                window.location.href = `${AUTH_WORKER_URL}/auth/login`;
+                window.location.href = `${AUTH_WORKER_URL}/auth/login?origin=${encodeURIComponent(window.location.origin)}`;
             };
 
             // Handle skip - continue without cloud backup
