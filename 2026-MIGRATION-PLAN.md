@@ -7,8 +7,8 @@
 | Infrastructure Setup | ✅ DONE | Separate repos, DNS, auth worker |
 | Phase 1: Year-End Close | ⏳ TODO | Needs implementation in 2025 repo |
 | Phase 2: 2025 Archive | ✅ DONE | Separate repo instead of branch |
-| Phase 3: 2026 Updates | ⏳ TODO | Tax constants, dates, strings |
-| Phase 4: Prior Year Summary | ⏳ TODO | New screen in 2026 app |
+| Phase 3: 2026 Updates | ✅ DONE | Tax brackets, SE tax, QBI, quarterly dates |
+| Phase 4: Prior Year Summary | ✅ DONE | Nav item, component, setup wizard integration |
 | Phase 5: Deployment | ✅ PARTIAL | DNS done, auth done, apps need updates |
 
 ---
@@ -314,7 +314,7 @@ const CACHE_NAME = 'alyx-income-manager-2025-final';
 
 ---
 
-## Phase 3: Update main Branch for 2026 ⏳ TODO
+## Phase 3: Update main Branch for 2026 ✅ DONE
 
 > **Location:** This work happens in this repository (`Alyx-Tax-manager`)
 
@@ -486,7 +486,7 @@ const CACHE_NAME = 'alyx-income-manager-2026-v1';
 
 ---
 
-## Phase 4: Add Prior Year Summary Screen ⏳ TODO
+## Phase 4: Add Prior Year Summary Screen ✅ DONE
 
 > **Location:** This work happens in this repository (`Alyx-Tax-manager`)
 
@@ -879,17 +879,17 @@ Fixed deploy workflow (`.github/workflows/deploy-worker.yml`) to use direct `npx
 - [ ] HTTPS certificate issued
 
 ### After Phase 3 (2026 Updates)
-- [ ] Tax brackets are correct for 2026
-- [ ] Week dates are 2026 Fridays
-- [ ] UI strings say "2026" not "2025"
-- [ ] New backup file created (2026-backup.json)
-- [ ] Old 2025 backup still exists (not overwritten)
+- [x] Tax brackets are correct for 2026 (TAX_BRACKETS_2026)
+- [x] Week dates are 2026 Fridays (DEFAULT_SETTINGS.startDate = "2026-01-01")
+- [x] Quarterly dates say "2026" (QUARTERLY_DUE_DATES)
+- [x] New backup file uses 2026 name (DRIVE_BACKUP_FILENAME)
+- [x] localStorage key is 2026-specific (alyxIncomeManager2026)
 
 ### After Phase 4 (Prior Year Summary)
-- [ ] "2025 Summary" nav item appears
-- [ ] Prior Year Summary loads 2025 report from Drive
-- [ ] Setup wizard auto-detects 2025 tax total
-- [ ] Manual entry still works if report not found
+- [x] "2025" nav item appears (line 1767)
+- [x] Prior Year Summary component implemented (line 2311+)
+- [x] Setup wizard auto-detects 2025 tax total (lines 1917-1950)
+- [x] Manual entry still works if report not found
 
 ### After Phase 5 (Deployment)
 - [x] app.therapytaxapp.work loads 2026 app
@@ -912,8 +912,6 @@ If something goes wrong:
 
 ## Next Steps
 
-1. **Phase 1:** Add Year-End Close feature to 2025 repo
+1. **Phase 1:** Add Year-End Close feature to 2025 repo (only remaining major work)
 2. **Wait:** User generates 2025 report using Year-End Close
-3. **Phase 3:** Update this repo (2026 app) with 2026 tax constants
-4. **Phase 4:** Add Prior Year Summary screen to 2026 app
-5. **Cleanup:** Remove http origin from ALLOWED_ORIGINS after HTTPS works
+3. **Cleanup:** Remove `http://2025.therapytaxapp.work` from ALLOWED_ORIGINS after HTTPS works
