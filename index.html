@@ -2540,6 +2540,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return;
                 }
 
+                if (!currentWeekData) {
+                    alert('Week data not found. Please refresh the page.');
+                    return;
+                }
+
                 // Calculate business expenses using rolling 4-week method
                 const rolling4Week = calculateRolling4WeekBusiness(
                     currentWeekData.date,
@@ -2873,7 +2878,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     {/* Header */}
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <h1 className="text-2xl font-bold text-gray-800">{appData.settings.businessName}</h1>
-                        <p className="text-gray-600">Week {currentWeek} of 52 ({formatDate(currentWeekData.date)})</p>
+                        <p className="text-gray-600">Week {currentWeek} of 52 ({currentWeekData ? formatDate(currentWeekData.date) : 'Loading...'})</p>
                     </div>
 
                     {/* Missing Weeks Alert */}
@@ -3183,11 +3188,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     </div>
 
                     {/* Enter Weekly Income */}
-                    {!showSplit && currentWeekData.income === null && (
+                    {!showSplit && currentWeekData && currentWeekData.income === null && (
                         <div className="bg-white rounded-lg shadow-md p-6">
                             <h2 className="text-xl font-bold text-gray-800 mb-4">💵 ENTER THIS WEEK'S INCOME</h2>
                             <p className="text-gray-600 mb-4">
-                                Week {currentWeek} ending Friday, {formatDate(currentWeekData.date)}
+                                Week {currentWeek} ending Friday, {currentWeekData ? formatDate(currentWeekData.date) : 'Loading...'}
                             </p>
                             <div className="flex gap-4">
                                 <div className="flex-1">
