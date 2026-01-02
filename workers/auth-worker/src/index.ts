@@ -96,8 +96,12 @@ export default {
  * Redirects user to Google OAuth consent screen
  */
 function handleLogin(request: Request, env: Env, url: URL): Response {
-  // Store the origin in state so we know where to redirect back to
-  const origin = getRequestOrigin(request, env);
+   // Prefer explicit origin param (most reliable), fall back to header detection
+  const originParam = url.searchParams.get('origin');
+  const allowedOrigins = getAllowedOrigins(env);
+  const origin = (originParam && allowedOrigins.includes(originParam)) 
+    ? originParam 
+    : getRequestOrigin(request, env);
 
   const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   authUrl.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
