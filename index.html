@@ -1632,10 +1632,23 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             }, [appData]);
 
             const updateSettings = (newSettings) => {
-                setAppData(prev => ({
-                    ...prev,
-                    settings: { ...prev.settings, ...newSettings }
-                }));
+                setAppData(prev => {
+                    const updatedState = {
+                        ...prev,
+                        settings: { ...prev.settings, ...newSettings }
+                    };
+
+                    // If tax2025Total is being updated, also update quarterly payment amounts
+                    if (newSettings.tax2025Total !== undefined) {
+                        const quarterlyAmount = Math.round(newSettings.tax2025Total / 4);
+                        updatedState.quarterlyPayments = prev.quarterlyPayments.map(q => ({
+                            ...q,
+                            amount: quarterlyAmount
+                        }));
+                    }
+
+                    return updatedState;
+                });
             };
 
             const updateWeek = (weekNumber, weekData) => {
@@ -2003,14 +2016,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             };
 
             const handleFinishSetup = () => {
+                const quarterlyAmount = Math.round(tax2025 / 4);
                 setAppData(prev => ({
                     ...prev,
                     settings: {
                         ...prev.settings,
                         tax2025Total: tax2025,
-                        quarterlyPayment: Math.round(tax2025 / 4),
+                        quarterlyPayment: quarterlyAmount,
                         startingTaxSavingsBalance: startingTaxSavings
                     },
+                    quarterlyPayments: prev.quarterlyPayments.map(q => ({
+                        ...q,
+                        amount: quarterlyAmount
+                    })),
                     expenses: {
                         budget: csvFile || {},
                         dueDates: dueDates
