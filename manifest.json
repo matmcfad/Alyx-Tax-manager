@@ -1,7 +1,7 @@
 {
-  "name": "Alyx Steadman Therapy - Income Manager",
-  "short_name": "Alyx Income",
-  "description": "Income allocation and tax tracking for self-employed therapists",
+  "name": "Alyx Tax Manager 2026",
+  "short_name": "Tax 2026",
+  "description": "2026 income allocation and tax tracking for self-employed therapists",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#ffffff",

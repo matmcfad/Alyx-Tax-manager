@@ -39,53 +39,55 @@
         const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
         // ============================================================================
-        // CONSTANTS
+        // CONSTANTS - 2026 TAX YEAR
+        // Source: IRS Revenue Procedure 2025-32, SSA, OBBBA
         // ============================================================================
 
-        // 2025 Tax Brackets for Single Filers
-        const TAX_BRACKETS_2025 = [
-            { min: 0, max: 11925, rate: 0.10, base: 0 },
-            { min: 11925, max: 48475, rate: 0.12, base: 1192.50 },
-            { min: 48475, max: 103350, rate: 0.22, base: 5578.50 },
-            { min: 103350, max: 197300, rate: 0.24, base: 17651 },
-            { min: 197300, max: 250525, rate: 0.32, base: 40199 },
-            { min: 250525, max: 626350, rate: 0.35, base: 57231 },
-            { min: 626350, max: Infinity, rate: 0.37, base: 188769.75 }
+        // 2026 Tax Brackets for Single Filers
+        const TAX_BRACKETS_2026 = [
+            { min: 0, max: 12400, rate: 0.10, base: 0 },
+            { min: 12400, max: 50400, rate: 0.12, base: 1240 },
+            { min: 50400, max: 105700, rate: 0.22, base: 5800 },
+            { min: 105700, max: 201775, rate: 0.24, base: 17966 },
+            { min: 201775, max: 256225, rate: 0.32, base: 41024 },
+            { min: 256225, max: 640600, rate: 0.35, base: 58448 },
+            { min: 640600, max: Infinity, rate: 0.37, base: 192979.75 }
         ];
 
         const QUARTERLY_DUE_DATES = [
-            { quarter: "Q1 2025", period: "Jan 1 - Mar 31", periodEnd: "2025-03-31", due: "2025-04-15", amount: 6416 },
-            { quarter: "Q2 2025", period: "Apr 1 - May 31", periodEnd: "2025-05-31", due: "2025-06-15", amount: 6416 },
-            { quarter: "Q3 2025", period: "Jun 1 - Aug 31", periodEnd: "2025-08-31", due: "2025-09-15", amount: 6416 },
-            { quarter: "Q4 2025", period: "Sep 1 - Dec 31", periodEnd: "2025-12-31", due: "2026-01-15", amount: 6416 }
+            { quarter: "Q1 2026", period: "Jan 1 - Mar 31", periodEnd: "2026-03-31", due: "2026-04-15", amount: 0 },
+            { quarter: "Q2 2026", period: "Apr 1 - May 31", periodEnd: "2026-05-31", due: "2026-06-15", amount: 0 },
+            { quarter: "Q3 2026", period: "Jun 1 - Aug 31", periodEnd: "2026-08-31", due: "2026-09-15", amount: 0 },
+            { quarter: "Q4 2026", period: "Sep 1 - Dec 31", periodEnd: "2026-12-31", due: "2027-01-15", amount: 0 }
         ];
 
         const DEFAULT_SETTINGS = {
-            tax2024Total: 25664,
-            quarterlyPayment: 6416,
-            standardDeduction: 15000, // 2025 Single filer standard deduction
+            tax2025Total: 0,                // Will be pulled from 2025 final report
+            quarterlyPayment: 0,            // tax2025Total / 4
+            standardDeduction: 16100,       // 2026 Single filer standard deduction
             startingTaxSavingsBalance: 0,
-            startDate: "2025-01-01",
-            currentYear: 2025,
+            startDate: "2026-01-01",
+            currentYear: 2026,
             businessName: "Alyx Steadman Therapy PLLC"
         };
 
-        // 2025 Self-Employment Tax Constants
-        const SE_TAX_2025 = {
+        // 2026 Self-Employment Tax Constants
+        const SE_TAX_2026 = {
             socialSecurityRate: 0.124,      // 12.4% Social Security
-            socialSecurityWageBase: 176100, // 2025 SS wage base cap
+            socialSecurityWageBase: 184500, // 2026 SS wage base cap (up from 176,100)
             medicareRate: 0.029,            // 2.9% Medicare (no cap)
             additionalMedicareRate: 0.009,  // 0.9% Additional Medicare Tax
             additionalMedicareThreshold: 200000, // Single filer threshold
             seTaxBaseMultiplier: 0.9235     // 92.35% of net earnings
         };
 
-        // 2025 Qualified Business Income (QBI) Deduction Constants - Section 199A
-        // Note: Therapists are classified as SSTB (Specified Service Trade or Business)
-        const QBI_2025 = {
+        // 2026 Qualified Business Income (QBI) Deduction Constants - Section 199A
+        // Note: OBBBA expanded phase-out range from $50k to $75k for SSTBs
+        const QBI_2026 = {
             deductionRate: 0.20,            // 20% deduction
-            sstbThresholdSingle: 191950,    // Full deduction below this (2025 est.)
-            sstbPhaseOutSingle: 241950,     // No deduction above this (2025 est.)
+            sstbThresholdSingle: 201750,    // Full deduction below this (2026)
+            sstbPhaseOutSingle: 276750,     // No deduction above this (2026, $75k range)
+            minimumDeduction: 400,          // NEW in 2026: min $400 if QBI >= $1000
             isSSTB: true                    // Therapists are SSTB - affects high earners
         };
 
@@ -95,8 +97,9 @@
         // Google Drive Backup Constants
         // Auth handled by Cloudflare Worker - see workers/auth-worker/
         const AUTH_WORKER_URL = 'https://auth.therapytaxapp.work';
-        const DRIVE_BACKUP_FILENAME = 'alyx-tax-manager-2025-backup.json';
-        const YEAR_END_REPORT_FILENAME = 'alyx-tax-manager-2025-final-report.json';
+        const DRIVE_BACKUP_FILENAME = 'alyx-tax-manager-2026-backup.json';
+        const PRIOR_YEAR_REPORT_FILENAME = 'alyx-tax-manager-2025-final-report.json';
+        const YEAR_END_REPORT_FILENAME = 'alyx-tax-manager-2026-final-report.json';
         const SYNC_DEBOUNCE_MS = 5000; // Wait 5 seconds after last change before syncing
 
         // ============================================================================
@@ -109,19 +112,19 @@
          * @returns {object} { seTax, ssTax, medicareTax, additionalMedicareTax, seTaxDeduction, seTaxBase }
          */
         function calculateSelfEmploymentTax(netIncome) {
-            const seTaxBase = netIncome * SE_TAX_2025.seTaxBaseMultiplier;
+            const seTaxBase = netIncome * SE_TAX_2026.seTaxBaseMultiplier;
 
             // Social Security: 12.4% only up to wage base cap
-            const ssTaxableAmount = Math.min(seTaxBase, SE_TAX_2025.socialSecurityWageBase);
-            const ssTax = ssTaxableAmount * SE_TAX_2025.socialSecurityRate;
+            const ssTaxableAmount = Math.min(seTaxBase, SE_TAX_2026.socialSecurityWageBase);
+            const ssTax = ssTaxableAmount * SE_TAX_2026.socialSecurityRate;
 
             // Medicare: 2.9% on ALL income (no cap)
-            const medicareTax = seTaxBase * SE_TAX_2025.medicareRate;
+            const medicareTax = seTaxBase * SE_TAX_2026.medicareRate;
 
             // Additional Medicare Tax: 0.9% on income over threshold
             let additionalMedicareTax = 0;
-            if (seTaxBase > SE_TAX_2025.additionalMedicareThreshold) {
-                additionalMedicareTax = (seTaxBase - SE_TAX_2025.additionalMedicareThreshold) * SE_TAX_2025.additionalMedicareRate;
+            if (seTaxBase > SE_TAX_2026.additionalMedicareThreshold) {
+                additionalMedicareTax = (seTaxBase - SE_TAX_2026.additionalMedicareThreshold) * SE_TAX_2026.additionalMedicareRate;
             }
 
             const seTax = ssTax + medicareTax + additionalMedicareTax;
@@ -134,7 +137,7 @@
                 additionalMedicareTax,
                 seTaxDeduction,
                 seTaxBase,
-                ssWageBaseCapped: seTaxBase > SE_TAX_2025.socialSecurityWageBase
+                ssWageBaseCapped: seTaxBase > SE_TAX_2026.socialSecurityWageBase
             };
         }
 
@@ -157,11 +160,11 @@
                 };
             }
 
-            const threshold = QBI_2025.sstbThresholdSingle;
-            const phaseOutEnd = QBI_2025.sstbPhaseOutSingle;
+            const threshold = QBI_2026.sstbThresholdSingle;
+            const phaseOutEnd = QBI_2026.sstbPhaseOutSingle;
 
             // If above phase-out, no QBI deduction for SSTB (therapists)
-            if (QBI_2025.isSSTB && taxableIncomeBeforeQBI >= phaseOutEnd) {
+            if (QBI_2026.isSSTB && taxableIncomeBeforeQBI >= phaseOutEnd) {
                 return {
                     qbiDeduction: 0,
                     qbiFromBusiness: 0,
@@ -172,14 +175,14 @@
             }
 
             // Calculate base QBI deduction (20% of qualified business income)
-            let qbiFromBusiness = netBusinessIncome * QBI_2025.deductionRate;
+            let qbiFromBusiness = netBusinessIncome * QBI_2026.deductionRate;
 
             // QBI is also limited to 20% of taxable income (before QBI)
-            const qbiFromTaxable = taxableIncomeBeforeQBI * QBI_2025.deductionRate;
+            const qbiFromTaxable = taxableIncomeBeforeQBI * QBI_2026.deductionRate;
 
             // Apply SSTB phase-out if in phase-out range
             let sstbPhaseOut = false;
-            if (QBI_2025.isSSTB && taxableIncomeBeforeQBI > threshold) {
+            if (QBI_2026.isSSTB && taxableIncomeBeforeQBI > threshold) {
                 sstbPhaseOut = true;
                 const phaseOutRange = phaseOutEnd - threshold;
                 const amountOver = taxableIncomeBeforeQBI - threshold;
@@ -200,7 +203,7 @@
         }
 
         /**
-         * Calculate income tax using 2025 tax brackets (single filer)
+         * Calculate income tax using 2026 tax brackets (single filer)
          * Now includes QBI deduction calculation
          * @param {number} netIncome - Net income after business expenses
          * @param {number} seTaxDeduction - Half of self-employment tax
@@ -220,8 +223,8 @@
             let incomeTax = 0;
             let bracketDetails = [];
 
-            // Calculate progressive income tax using 2025 brackets
-            for (const bracket of TAX_BRACKETS_2025) {
+            // Calculate progressive income tax using 2026 brackets
+            for (const bracket of TAX_BRACKETS_2026) {
                 if (taxableIncome <= bracket.min) break;
 
                 const taxableInBracket = Math.min(taxableIncome, bracket.max) - bracket.min;
@@ -306,13 +309,13 @@
         function calculateSmartTaxSavings(weeklyIncome, ytdIncome, weeksElapsed, taxSavingsBalance, quarterlyPaid, settings, annualBusinessExpenses = 0) {
             // If it's the very first week, use safe harbor amount as baseline
             if (weeksElapsed === 0) {
-                const weeklyTarget = settings.tax2024Total / 52;
+                const weeklyTarget = settings.tax2025Total / 52;
                 return {
                     amount: weeklyTarget,
                     percentage: (weeklyTarget / weeklyIncome) * 100,
                     status: 'baseline',
                     explanation: 'First week - using safe harbor baseline',
-                    projectedTax: settings.tax2024Total
+                    projectedTax: settings.tax2025Total
                 };
             }
 
@@ -320,13 +323,13 @@
             const avgWeekly = ytdIncome / weeksElapsed;
             const projectedAnnual = avgWeekly * 52;
 
-            // Calculate projected 2025 tax (now with business expenses and QBI deduction)
+            // Calculate projected 2026 tax (now with business expenses and QBI deduction)
             const projectedTax = calculateTotalTax(projectedAnnual, annualBusinessExpenses, settings.standardDeduction);
 
             // We need enough to cover the HIGHER of:
-            // 1. Safe harbor (2024 tax) - to avoid penalties
-            // 2. Projected 2025 tax - to avoid owing at tax time
-            const totalNeeded = Math.max(settings.tax2024Total, projectedTax.totalTax);
+            // 1. Safe harbor (2025 tax) - to avoid penalties
+            // 2. Projected 2026 tax - to avoid owing at tax time
+            const totalNeeded = Math.max(settings.tax2025Total, projectedTax.totalTax);
 
             // How much more do we need to save?
             // Account for both current savings AND quarterly payments already made
@@ -743,8 +746,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
         // ============================================================================
 
         /**
-         * Generate a comprehensive year-end report for 2025
-         * This report is saved to Google Drive and read by the 2026 app
+         * Generate a comprehensive year-end report for 2026
+         * This report is saved to Google Drive and read by the 2027 app
          * for prior year summary and safe harbor calculation
          * @param {object} appData - The complete app data state
          * @returns {object} Year-end report object
@@ -760,7 +763,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             return {
                 reportVersion: "1.0",
                 generatedAt: new Date().toISOString(),
-                taxYear: 2025,
+                taxYear: 2026,
 
                 // Summary totals
                 summary: {
@@ -810,7 +813,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                 // Settings for reference
                 settings: {
-                    tax2024Total: appData.settings.tax2024Total,
+                    tax2025Total: appData.settings.tax2025Total,
                     quarterlyPayment: appData.settings.quarterlyPayment,
                     standardDeduction: appData.settings.standardDeduction,
                     startingTaxSavingsBalance: appData.settings.startingTaxSavingsBalance,
@@ -1526,9 +1529,29 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             dataVersion: 2,
                             weeks: data.weeks.map((week, i) => ({
                                 ...week,
-                                date: getFridayOfWeek(i + 1, 2025).toISOString().split('T')[0]
+                                date: getFridayOfWeek(i + 1, 2026).toISOString().split('T')[0]
                             }))
                         };
+                    }
+
+                    // Migration: v2 -> v3 (2026 week dates and settings rename)
+                    if ((data.dataVersion || 1) < 3) {
+                        data = {
+                            ...data,
+                            dataVersion: 3,
+                            weeks: data.weeks.map((week, i) => ({
+                                ...week,
+                                date: getFridayOfWeek(i + 1, 2026).toISOString().split('T')[0]
+                            })),
+                            settings: {
+                                ...data.settings,
+                                tax2025Total: data.settings.tax2024Total || data.settings.tax2025Total || 0
+                            }
+                        };
+                        // Remove old field if it exists
+                        if (data.settings.tax2024Total !== undefined) {
+                            delete data.settings.tax2024Total;
+                        }
                     }
 
                     // Future migrations go here:
@@ -1539,7 +1562,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 } else {
                     // Initialize with default data
                     const initialData = {
-                        dataVersion: 2,
+                        dataVersion: 3,
                         settings: { ...DEFAULT_SETTINGS, setupComplete: false },
                         expenses: {
                             budget: {},
@@ -1547,7 +1570,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         },
                         weeks: Array.from({ length: 52 }, (_, i) => ({
                             week: i + 1,
-                            date: getFridayOfWeek(i + 1, 2025).toISOString().split('T')[0],
+                            date: getFridayOfWeek(i + 1, 2026).toISOString().split('T')[0],
                             income: null,
                             business: null,
                             tax: null,
@@ -1776,7 +1799,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             setLastSyncTime,
             setIsSetupComplete
         }) {
-            const [tax2024, setTax2024] = useState(appData.settings.tax2024Total);
+            const [tax2025, setTax2025] = useState(appData.settings.tax2025Total);
             const [csvFile, setCsvFile] = useState(null);
             const [dueDates, setDueDates] = useState({});
             const [startingTaxSavings, setStartingTaxSavings] = useState(appData.settings.startingTaxSavingsBalance);
@@ -1911,8 +1934,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     ...prev,
                     settings: {
                         ...prev.settings,
-                        tax2024Total: tax2024,
-                        quarterlyPayment: Math.round(tax2024 / 4),
+                        tax2025Total: tax2025,
+                        quarterlyPayment: Math.round(tax2025 / 4),
                         startingTaxSavingsBalance: startingTaxSavings
                     },
                     expenses: {
@@ -1997,26 +2020,26 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 <h2 className="text-2xl font-bold text-gray-800 mb-6">Step 1: Tax Information</h2>
                                 <div className="mb-6">
                                     <label className="block text-gray-700 mb-2 font-semibold">
-                                        What was your total 2024 tax?
+                                        What was your total 2025 tax?
                                     </label>
                                     <p className="text-sm text-gray-600 mb-4">
-                                        This is used to calculate quarterly estimated payments for 2025.
+                                        This is used to calculate quarterly estimated payments for 2026.
                                     </p>
                                     <div className="relative">
                                         <span className="absolute left-3 top-3 text-gray-500">$</span>
                                         <input
                                             type="number"
-                                            value={tax2024}
-                                            onChange={(e) => setTax2024(parseFloat(e.target.value) || 0)}
+                                            value={tax2025}
+                                            onChange={(e) => setTax2025(parseFloat(e.target.value) || 0)}
                                             className="w-full pl-8 pr-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                                             placeholder="25664"
                                         />
                                     </div>
                                     <p className="text-sm text-gray-500 mt-2">
-                                        Don't know? Check your 2024 tax return, Form 1040, Line 24.
+                                        Don't know? Check your 2025 tax return, Form 1040, Line 24.
                                     </p>
                                     <p className="text-sm text-blue-600 mt-2 font-semibold">
-                                        Your quarterly payment will be: ${Math.round(tax2024 / 4).toLocaleString()}
+                                        Your quarterly payment will be: ${Math.round(tax2025 / 4).toLocaleString()}
                                     </p>
                                 </div>
                                 <div className="flex gap-4">
@@ -2871,7 +2894,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 </span>
                             </div>
                             <div>
-                                <span className="text-gray-600">Projected 2025 tax: </span>
+                                <span className="text-gray-600">Projected 2026 tax: </span>
                                 <span className="font-semibold number-mono">
                                     ~${projectedTax.totalTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </span>
@@ -2879,15 +2902,15 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             <div>
                                 <span className="text-gray-600">Quarterly payments: </span>
                                 <span className="font-semibold number-mono">
-                                    ${appData.settings.tax2024Total.toLocaleString()}
+                                    ${appData.settings.tax2025Total.toLocaleString()}
                                 </span>
                             </div>
                             <div>
                                 <span className="text-gray-600">Additional due at end of year: </span>
                                 <span className={`font-semibold number-mono ${
-                                    projectedTax.totalTax > appData.settings.tax2024Total ? 'text-blue-800' : 'text-green-600'
+                                    projectedTax.totalTax > appData.settings.tax2025Total ? 'text-blue-800' : 'text-green-600'
                                 }`}>
-                                    ~${Math.max(0, projectedTax.totalTax - appData.settings.tax2024Total).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    ~${Math.max(0, projectedTax.totalTax - appData.settings.tax2025Total).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </span>
                             </div>
                         </div>
@@ -3022,8 +3045,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                 </div>
                                                 <div className="mt-3">
                                                     <div className="font-semibold text-gray-700 mb-1">What you need by year-end:</div>
-                                                    <div>• Safe harbor (2024 tax): ${appData.settings.tax2024Total.toLocaleString()}</div>
-                                                    <div>• Projected 2025 tax: ${calculatedSplit.smartTax.projectedTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                                    <div>• Safe harbor (2025 tax): ${appData.settings.tax2025Total.toLocaleString()}</div>
+                                                    <div>• Projected 2026 tax: ${calculatedSplit.smartTax.projectedTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                                     <div className="font-semibold mt-1">• Target (higher of both): ${calculatedSplit.smartTax.totalNeeded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                                 </div>
                                                 <div className="mt-3">
@@ -3451,7 +3474,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
             const projectedTax = calculateTotalTax(projectedAnnual, annualExpenses, appData.settings.standardDeduction);
 
-            const totalQuarterly = appData.settings.tax2024Total;
+            const totalQuarterly = appData.settings.tax2025Total;
             const additionalNeeded = Math.max(0, projectedTax.totalTax - totalQuarterly);
 
             // New calculations for improved Year-End Projection
@@ -3486,7 +3509,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <h2 className="text-xl font-bold text-gray-800 mb-4">QUARTERLY PAYMENTS</h2>
                         <p className="text-gray-600 mb-4">
-                            Based on 2024 tax: ${totalQuarterly.toLocaleString()}
+                            Based on 2025 tax: ${totalQuarterly.toLocaleString()}
                         </p>
 
                         <div className="space-y-4">
@@ -3711,7 +3734,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                                 <div className="space-y-2 mb-4">
                                     {/* Gross Income & Business Expenses */}
-                                    <div className="font-semibold">Projected 2025 gross income: ${projectedTax.grossIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                    <div className="font-semibold">Projected 2026 gross income: ${projectedTax.grossIncome.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
 
                                     {projectedTax.businessExpenses > 0 && (
                                         <div className="ml-4">
@@ -3725,7 +3748,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         <div>Net profit: ${projectedTax.netProfit.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                         <div>× 0.9235 = ${projectedTax.seTaxBase.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} (SE tax base)</div>
                                         <div className="mt-2 ml-2">
-                                            <div className="text-gray-600">Social Security (12.4%{projectedTax.ssWageBaseCapped ? `, capped at $${SE_TAX_2025.socialSecurityWageBase.toLocaleString()}` : ''}):</div>
+                                            <div className="text-gray-600">Social Security (12.4%{projectedTax.ssWageBaseCapped ? `, capped at $${SE_TAX_2026.socialSecurityWageBase.toLocaleString()}` : ''}):</div>
                                             <div className="ml-2">${projectedTax.ssTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                             <div className="text-gray-600 mt-1">Medicare (2.9%, no cap):</div>
                                             <div className="ml-2">${projectedTax.medicareTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
@@ -3981,7 +4004,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                                 {showMonthlyBreakdown && (
                                     <div className="p-4 bg-gray-50 rounded-lg">
-                                        <h3 className="font-semibold mb-3">2025 MONTHLY EXPENSES</h3>
+                                        <h3 className="font-semibold mb-3">2026 MONTHLY EXPENSES</h3>
                                         <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-sm">
                                             {monthNames.map((month, i) => (
                                                 <div key={month} className={i === currentMonth ? 'font-bold' : ''}>
@@ -3995,7 +4018,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         <div className="mt-4 pt-4 border-t border-gray-300">
                                             <div className="flex justify-between">
                                                 <span>Average: ${averageMonthly.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}/month</span>
-                                                <span>Total 2025: ${totalYear.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
+                                                <span>Total 2026: ${totalYear.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
                                             </div>
                                         </div>
                                     </div>
@@ -4047,7 +4070,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
         }) {
             const [editMode, setEditMode] = useState(false);
             const [formData, setFormData] = useState({
-                tax2024Total: appData.settings.tax2024Total,
+                tax2025Total: appData.settings.tax2025Total,
                 standardDeduction: appData.settings.standardDeduction,
                 businessName: appData.settings.businessName,
                 startDate: appData.settings.startDate
@@ -4059,7 +4082,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             // Handle Year-End Close
             const handleYearEndClose = async () => {
-                if (!window.confirm('Generate your 2025 Year-End Report?\n\nThis will save all your 2025 financial data to Google Drive. The 2026 app will use this report to display your 2025 summary and calculate your safe harbor amount.')) {
+                if (!window.confirm('Generate your 2026 Year-End Report?\n\nThis will save all your 2026 financial data to Google Drive. The 2027 app will use this report to display your 2026 summary and calculate your safe harbor amount.')) {
                     return;
                 }
 
@@ -4117,8 +4140,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             const handleSave = () => {
                 updateSettings({
-                    tax2024Total: parseFloat(formData.tax2024Total),
-                    quarterlyPayment: Math.round(parseFloat(formData.tax2024Total) / 4),
+                    tax2025Total: parseFloat(formData.tax2025Total),
+                    quarterlyPayment: Math.round(parseFloat(formData.tax2025Total) / 4),
                     standardDeduction: parseFloat(formData.standardDeduction),
                     businessName: formData.businessName,
                     startDate: formData.startDate
@@ -4352,9 +4375,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         {!editMode ? (
                             <div className="space-y-3">
                                 <div>
-                                    <div className="text-sm text-gray-600">2024 Total Tax</div>
+                                    <div className="text-sm text-gray-600">2025 Total Tax</div>
                                     <div className="text-lg font-semibold number-mono">
-                                        ${appData.settings.tax2024Total.toLocaleString()}
+                                        ${appData.settings.tax2025Total.toLocaleString()}
                                     </div>
                                 </div>
                                 <div>
@@ -4364,7 +4387,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     </div>
                                 </div>
                                 <div>
-                                    <div className="text-sm text-gray-600">Standard Deduction (2025)</div>
+                                    <div className="text-sm text-gray-600">Standard Deduction (2026)</div>
                                     <div className="text-lg font-semibold number-mono">
                                         ${appData.settings.standardDeduction.toLocaleString()}
                                     </div>
@@ -4379,19 +4402,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         ) : (
                             <div className="space-y-4">
                                 <div>
-                                    <label className="block text-sm text-gray-600 mb-1">2024 Total Tax</label>
+                                    <label className="block text-sm text-gray-600 mb-1">2025 Total Tax</label>
                                     <div className="relative">
                                         <span className="absolute left-3 top-3 text-gray-500">$</span>
                                         <input
                                             type="number"
-                                            value={formData.tax2024Total}
-                                            onChange={(e) => setFormData({ ...formData, tax2024Total: e.target.value })}
+                                            value={formData.tax2025Total}
+                                            onChange={(e) => setFormData({ ...formData, tax2025Total: e.target.value })}
                                             className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                                         />
                                     </div>
                                 </div>
                                 <div>
-                                    <label className="block text-sm text-gray-600 mb-1">Standard Deduction (2024)</label>
+                                    <label className="block text-sm text-gray-600 mb-1">Standard Deduction (2026)</label>
                                     <div className="relative">
                                         <span className="absolute left-3 top-3 text-gray-500">$</span>
                                         <input
@@ -4413,7 +4436,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                         onClick={() => {
                                             setEditMode(false);
                                             setFormData({
-                                                tax2024Total: appData.settings.tax2024Total,
+                                                tax2025Total: appData.settings.tax2025Total,
                                                 standardDeduction: appData.settings.standardDeduction,
                                                 businessName: appData.settings.businessName,
                                                 startDate: appData.settings.startDate
@@ -4713,13 +4736,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     {/* Year-End Close Section */}
                     {googleAccessToken && appData.settings.setupComplete && (
                         <div className="bg-white rounded-lg shadow-md p-6">
-                            <h2 className="text-xl font-bold text-gray-800 mb-4">YEAR-END CLOSE (2025)</h2>
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">YEAR-END CLOSE (2026)</h2>
 
                             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
                                 <p className="text-amber-800 text-sm">
-                                    <strong>Important:</strong> This generates a final report of your 2025 tax year
-                                    and saves it to Google Drive. The 2026 app will use this report to display your
-                                    2025 summary and calculate your safe harbor amount.
+                                    <strong>Important:</strong> This generates a final report of your 2026 tax year
+                                    and saves it to Google Drive. The 2027 app will use this report to display your
+                                    2026 summary and calculate your safe harbor amount.
                                 </p>
                             </div>
 
@@ -4737,8 +4760,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             {yearEndCloseStatus === 'success' ? (
                                 <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                                     <p className="text-green-800">
-                                        <span className="font-bold">Success!</span> Your 2025 Year-End Report has been saved to Google Drive.
-                                        You can now switch to the 2026 app when ready.
+                                        <span className="font-bold">Success!</span> Your 2026 Year-End Report has been saved to Google Drive.
+                                        You can switch to the 2027 app when ready.
                                     </p>
                                 </div>
                             ) : (
@@ -4747,7 +4770,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     disabled={yearEndCloseStatus === 'saving'}
                                     className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 transition-colors font-medium"
                                 >
-                                    {yearEndCloseStatus === 'saving' ? 'Saving Report...' : 'Generate 2025 Year-End Report'}
+                                    {yearEndCloseStatus === 'saving' ? 'Saving Report...' : 'Generate 2026 Year-End Report'}
                                 </button>
                             )}
 
