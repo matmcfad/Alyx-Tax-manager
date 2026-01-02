@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
 [vars]
-ALLOWED_ORIGINS = "https://app.therapytaxapp.work,https://2025.therapytaxapp.work"
+ALLOWED_ORIGINS = "https://app.therapytaxapp.work,https://2025.therapytaxapp.work,http://2025.therapytaxapp.work"
 
 [[kv_namespaces]]
 binding = "TOKENS"
