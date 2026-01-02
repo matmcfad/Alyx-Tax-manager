@@ -9,7 +9,7 @@ interface Env {
   TOKENS: KVNamespace;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
-  ALLOWED_ORIGIN: string;
+  ALLOWED_ORIGINS: string; // Comma-separated list of allowed origins
 }
 
 interface TokenData {
@@ -29,19 +29,50 @@ interface GoogleTokenResponse {
 const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
+/**
+ * Get list of allowed origins from environment
+ */
+function getAllowedOrigins(env: Env): string[] {
+  return env.ALLOWED_ORIGINS.split(',').map(o => o.trim());
+}
+
+/**
+ * Get the origin from request, or default to first allowed origin
+ */
+function getRequestOrigin(request: Request, env: Env): string {
+  const origin = request.headers.get('Origin');
+  const allowedOrigins = getAllowedOrigins(env);
+
+  if (origin && allowedOrigins.includes(origin)) {
+    return origin;
+  }
+
+  // For redirects (no Origin header), check Referer
+  const referer = request.headers.get('Referer');
+  if (referer) {
+    const refererOrigin = new URL(referer).origin;
+    if (allowedOrigins.includes(refererOrigin)) {
+      return refererOrigin;
+    }
+  }
+
+  // Default to first allowed origin
+  return allowedOrigins[0];
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     // CORS preflight
     if (request.method === 'OPTIONS') {
-      return corsResponse(env, 204);
+      return corsResponse(request, env, 204);
     }
 
     try {
       switch (url.pathname) {
         case '/auth/login':
-          return handleLogin(env, url);
+          return handleLogin(request, env, url);
         case '/auth/callback':
           return handleCallback(request, env, url);
         case '/auth/token':
@@ -55,7 +86,7 @@ export default {
       }
     } catch (error) {
       console.error('Worker error:', error);
-      return corsResponse(env, 500, { error: 'Internal server error' });
+      return corsResponse(request, env, 500, { error: 'Internal server error' });
     }
   }
 };
@@ -64,7 +95,10 @@ export default {
  * GET /auth/login
  * Redirects user to Google OAuth consent screen
  */
-function handleLogin(env: Env, url: URL): Response {
+function handleLogin(request: Request, env: Env, url: URL): Response {
+  // Store the origin in state so we know where to redirect back to
+  const origin = getRequestOrigin(request, env);
+
   const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   authUrl.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
   authUrl.searchParams.set('redirect_uri', `${url.origin}/auth/callback`);
@@ -72,6 +106,7 @@ function handleLogin(env: Env, url: URL): Response {
   authUrl.searchParams.set('scope', GOOGLE_SCOPES);
   authUrl.searchParams.set('access_type', 'offline');
   authUrl.searchParams.set('prompt', 'consent'); // Force consent to get refresh token
+  authUrl.searchParams.set('state', origin); // Pass origin in state for callback
 
   return Response.redirect(authUrl.toString(), 302);
 }
@@ -83,13 +118,18 @@ function handleLogin(env: Env, url: URL): Response {
 async function handleCallback(request: Request, env: Env, url: URL): Promise<Response> {
   const code = url.searchParams.get('code');
   const error = url.searchParams.get('error');
+  const state = url.searchParams.get('state'); // Origin passed from login
+
+  // Validate and use the origin from state, or fall back to first allowed origin
+  const allowedOrigins = getAllowedOrigins(env);
+  const redirectOrigin = (state && allowedOrigins.includes(state)) ? state : allowedOrigins[0];
 
   if (error) {
-    return Response.redirect(`${env.ALLOWED_ORIGIN}?auth=error&message=${encodeURIComponent(error)}`, 302);
+    return Response.redirect(`${redirectOrigin}?auth=error&message=${encodeURIComponent(error)}`, 302);
   }
 
   if (!code) {
-    return Response.redirect(`${env.ALLOWED_ORIGIN}?auth=error&message=no_code`, 302);
+    return Response.redirect(`${redirectOrigin}?auth=error&message=no_code`, 302);
   }
 
   // Exchange authorization code for tokens
@@ -110,14 +150,14 @@ async function handleCallback(request: Request, env: Env, url: URL): Promise<Res
   if (tokens.error) {
     console.error('Token exchange error:', tokens.error, tokens.error_description);
     return Response.redirect(
-      `${env.ALLOWED_ORIGIN}?auth=error&message=${encodeURIComponent(tokens.error_description || tokens.error)}`,
+      `${redirectOrigin}?auth=error&message=${encodeURIComponent(tokens.error_description || tokens.error)}`,
       302
     );
   }
 
   if (!tokens.refresh_token) {
     console.error('No refresh token received');
-    return Response.redirect(`${env.ALLOWED_ORIGIN}?auth=error&message=no_refresh_token`, 302);
+    return Response.redirect(`${redirectOrigin}?auth=error&message=no_refresh_token`, 302);
   }
 
   // Generate session ID and store refresh token in KV
@@ -135,7 +175,7 @@ async function handleCallback(request: Request, env: Env, url: URL): Promise<Res
   return new Response(null, {
     status: 302,
     headers: {
-      'Location': `${env.ALLOWED_ORIGIN}?auth=success`,
+      'Location': `${redirectOrigin}?auth=success`,
       'Set-Cookie': buildSessionCookie(sessionId, SESSION_MAX_AGE)
     }
   });
@@ -149,12 +189,12 @@ async function handleToken(request: Request, env: Env): Promise<Response> {
   const sessionId = getSessionId(request);
 
   if (!sessionId) {
-    return corsResponse(env, 401, { error: 'Not authenticated', code: 'NO_SESSION' });
+    return corsResponse(request, env, 401, { error: 'Not authenticated', code: 'NO_SESSION' });
   }
 
   const stored = await env.TOKENS.get(sessionId);
   if (!stored) {
-    return corsResponse(env, 401, { error: 'Session expired', code: 'SESSION_EXPIRED' });
+    return corsResponse(request, env, 401, { error: 'Session expired', code: 'SESSION_EXPIRED' });
   }
 
   const tokenData: TokenData = JSON.parse(stored);
@@ -179,7 +219,7 @@ async function handleToken(request: Request, env: Env): Promise<Response> {
     // If refresh token is invalid, clear the session
     if (tokens.error === 'invalid_grant') {
       await env.TOKENS.delete(sessionId);
-      return corsResponse(env, 401, {
+      return corsResponse(request, env, 401, {
         error: 'Session invalidated',
         code: 'REFRESH_FAILED'
       }, {
@@ -187,10 +227,10 @@ async function handleToken(request: Request, env: Env): Promise<Response> {
       });
     }
 
-    return corsResponse(env, 500, { error: 'Token refresh failed', code: 'REFRESH_ERROR' });
+    return corsResponse(request, env, 500, { error: 'Token refresh failed', code: 'REFRESH_ERROR' });
   }
 
-  return corsResponse(env, 200, {
+  return corsResponse(request, env, 200, {
     access_token: tokens.access_token,
     expires_in: tokens.expires_in
   });
@@ -207,7 +247,7 @@ async function handleLogout(request: Request, env: Env): Promise<Response> {
     await env.TOKENS.delete(sessionId);
   }
 
-  return corsResponse(env, 200, { success: true }, {
+  return corsResponse(request, env, 200, { success: true }, {
     'Set-Cookie': buildSessionCookie('', 0) // Clear cookie
   });
 }
@@ -220,16 +260,16 @@ async function handleStatus(request: Request, env: Env): Promise<Response> {
   const sessionId = getSessionId(request);
 
   if (!sessionId) {
-    return corsResponse(env, 200, { authenticated: false });
+    return corsResponse(request, env, 200, { authenticated: false });
   }
 
   const stored = await env.TOKENS.get(sessionId);
   if (!stored) {
-    return corsResponse(env, 200, { authenticated: false });
+    return corsResponse(request, env, 200, { authenticated: false });
   }
 
   const tokenData: TokenData = JSON.parse(stored);
-  return corsResponse(env, 200, {
+  return corsResponse(request, env, 200, {
     authenticated: true,
     sessionCreated: tokenData.created
   });
@@ -256,15 +296,18 @@ function buildSessionCookie(sessionId: string, maxAge: number): string {
 }
 
 function corsResponse(
+  request: Request,
   env: Env,
   status: number,
   body?: Record<string, unknown>,
   extraHeaders?: Record<string, string>
 ): Response {
+  const origin = getRequestOrigin(request, env);
+
   return new Response(body ? JSON.stringify(body) : null, {
     status,
     headers: {
-      'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN,
+      'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
