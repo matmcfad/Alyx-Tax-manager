@@ -1,5 +1,18 @@
 # 2026 Tax Year Migration Plan
 
+## Status Summary
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Infrastructure Setup | ✅ DONE | Separate repos, DNS, auth worker |
+| Phase 1: Year-End Close | ⏳ TODO | Needs implementation in 2025 repo |
+| Phase 2: 2025 Archive | ✅ DONE | Separate repo instead of branch |
+| Phase 3: 2026 Updates | ⏳ TODO | Tax constants, dates, strings |
+| Phase 4: Prior Year Summary | ⏳ TODO | New screen in 2026 app |
+| Phase 5: Deployment | ✅ PARTIAL | DNS done, auth done, apps need updates |
+
+---
+
 ## Overview
 
 This document details the complete migration plan from the 2025 Alyx Tax Manager to a 2026 version. The plan preserves the 2025 app at a separate URL while creating a fresh 2026 version.
@@ -10,19 +23,21 @@ This document details the complete migration plan from the 2025 Alyx Tax Manager
 
 ---
 
-## Architecture
+## Architecture ✅ IMPLEMENTED
+
+> **Note:** Implementation uses separate repositories instead of branches for cleaner isolation.
 
 ```
 2025 App (frozen after Year-End Close)     2026 App (new)
 ───────────────────────────────────────    ─────────────────────
 URL: 2025.therapytaxapp.work               URL: app.therapytaxapp.work
-Branch: 2025                               Branch: main
+Repo: Alyx-Tax-manager-2025                Repo: Alyx-Tax-manager (this repo)
 
 Features:                                  Features:
-├─ Year-End Close feature (NEW)            ├─ Updated 2026 tax constants
-├─ Generates final report JSON             ├─ 2026 week dates (52 Fridays)
-└─ Saves to Google Drive                   ├─ Prior Year Summary (reads 2025 report)
-                                           └─ Setup pulls safe harbor from report
+├─ Year-End Close feature (TODO)           ├─ Updated 2026 tax constants (TODO)
+├─ Generates final report JSON             ├─ 2026 week dates (52 Fridays) (TODO)
+└─ Saves to Google Drive                   ├─ Prior Year Summary (reads 2025 report) (TODO)
+                                           └─ Setup pulls safe harbor from report (TODO)
 
 Data Flow:
 2025 App → Year-End Close → 2025-final-report.json → 2026 App reads it
@@ -30,7 +45,9 @@ Data Flow:
 
 ---
 
-## Phase 1: Add Year-End Close Feature to 2025 App
+## Phase 1: Add Year-End Close Feature to 2025 App ⏳ TODO
+
+> **Location:** This work happens in the `Alyx-Tax-manager-2025` repository
 
 ### 1.1 Add Constants (index.html ~line 98)
 
@@ -268,32 +285,17 @@ const handleYearEndClose = async () => {
 
 ---
 
-## Phase 2: Create 2025 Archive Branch
+## Phase 2: Create 2025 Archive ✅ DONE
 
-After Phase 1 is deployed and tested:
+> **Implementation Note:** Instead of a branch, we created a separate repository (`Alyx-Tax-manager-2025`) for cleaner isolation.
 
-### 2.1 Git Commands
+### 2.1 Repository Setup ✅ DONE
 
-```bash
-# Make sure main has Year-End Close feature
-git checkout main
-git pull
+- Created separate repo: `Alyx-Tax-manager-2025`
+- Configured GitHub Pages for `2025.therapytaxapp.work`
+- HTTPS certificate pending (GitHub Pages provisioning)
 
-# Create 2025 branch
-git checkout -b 2025
-
-# Update CNAME for archive subdomain
-echo "2025.therapytaxapp.work" > CNAME
-
-# Commit the change
-git add CNAME
-git commit -m "Configure 2025 archive subdomain"
-
-# Push the branch
-git push -u origin 2025
-```
-
-### 2.2 Update manifest.json on 2025 Branch
+### 2.2 Update manifest.json ⏳ TODO
 
 ```json
 {
@@ -304,7 +306,7 @@ git push -u origin 2025
 }
 ```
 
-### 2.3 Update service-worker.js on 2025 Branch
+### 2.3 Update service-worker.js ✅ DONE
 
 ```javascript
 const CACHE_NAME = 'alyx-income-manager-2025-final';
@@ -312,7 +314,9 @@ const CACHE_NAME = 'alyx-income-manager-2025-final';
 
 ---
 
-## Phase 3: Update main Branch for 2026
+## Phase 3: Update main Branch for 2026 ⏳ TODO
+
+> **Location:** This work happens in this repository (`Alyx-Tax-manager`)
 
 Switch back to main and make all 2026 changes:
 
@@ -482,7 +486,9 @@ const CACHE_NAME = 'alyx-income-manager-2026-v1';
 
 ---
 
-## Phase 4: Add Prior Year Summary Screen
+## Phase 4: Add Prior Year Summary Screen ⏳ TODO
+
+> **Location:** This work happens in this repository (`Alyx-Tax-manager`)
 
 ### 4.1 Add Navigation Item (~line 1554)
 
@@ -801,70 +807,59 @@ Update the tax input step UI to show when auto-detected:
 
 ---
 
-## Phase 5: Deployment
+## Phase 5: Deployment ✅ PARTIAL
 
-### 5.1 Cloudflare DNS
+### 5.1 Cloudflare DNS ✅ DONE
 
-Add new CNAME record for 2025 archive:
+CNAME record for 2025 archive configured:
 
 | Type | Name | Target | Proxy Status |
 |------|------|--------|--------------|
 | CNAME | `2025` | `mcfadden-matthew.github.io` | DNS only (gray cloud) |
 
-### 5.2 Auth Worker CORS Update
+### 5.2 Auth Worker CORS Update ✅ DONE
 
 **File:** `workers/auth-worker/wrangler.toml`
 
 ```toml
 [vars]
-ALLOWED_ORIGINS = "https://app.therapytaxapp.work,https://2025.therapytaxapp.work"
+ALLOWED_ORIGINS = "https://app.therapytaxapp.work,https://2025.therapytaxapp.work,http://2025.therapytaxapp.work"
 ```
 
-**File:** `workers/auth-worker/src/index.ts`
+> **Note:** `http://2025.therapytaxapp.work` temporarily added while HTTPS certificate is pending.
 
-Update the CORS handling to support multiple origins:
+**File:** `workers/auth-worker/src/index.ts` ✅ DONE
 
-```typescript
-function getCorsOrigin(request: Request, env: Env): string {
-    const origin = request.headers.get('Origin') || '';
-    const allowedOrigins = (env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim());
+Multi-origin CORS handling implemented with:
+- `getAllowedOrigins()` - parses comma-separated origins
+- `getRequestOrigin()` - validates request origin against allowed list
+- `handleLogin()` - reads `?origin=` param for redirect targeting
+- `handleCallback()` - uses OAuth `state` param to redirect to correct origin
 
-    if (allowedOrigins.includes(origin)) {
-        return origin;
-    }
+### 5.3 Google Cloud Console ✅ DONE
 
-    // Default to first allowed origin
-    return allowedOrigins[0] || 'https://app.therapytaxapp.work';
-}
-
-// Then use getCorsOrigin(request, env) instead of env.ALLOWED_ORIGIN
-```
-
-### 5.3 Google Cloud Console
-
-Add authorized JavaScript origin:
+Authorized JavaScript origins added:
+- `https://app.therapytaxapp.work`
 - `https://2025.therapytaxapp.work`
 
-(Redirect URI stays the same - both apps use the same auth worker)
+### 5.4 GitHub Actions Workflow ✅ DONE
 
-### 5.4 Deploy Commands
+Fixed deploy workflow (`.github/workflows/deploy-worker.yml`) to use direct `npx wrangler deploy` instead of `cloudflare/wrangler-action@v3` due to env var passing issues.
+
+### 5.5 Deploy Commands
 
 ```bash
-# Deploy 2025 branch
-git checkout 2025
-git push origin 2025
+# Deploy auth worker - automatic via GitHub Actions on push to workers/auth-worker/**
+# Or manual: cd workers/auth-worker && npx wrangler deploy
 
-# Configure GitHub Pages for 2025 branch
-# (May need manual setup in GitHub repo settings)
-
-# Deploy auth worker
-cd workers/auth-worker
-wrangler deploy
-
-# Deploy main (2026)
-git checkout main
-git push origin main
+# 2025 repo deploys to 2025.therapytaxapp.work via GitHub Pages
+# 2026 repo (this one) deploys to app.therapytaxapp.work via GitHub Pages
 ```
+
+### 5.6 Pending Items
+
+- [ ] HTTPS certificate for `2025.therapytaxapp.work` (GitHub Pages provisioning in progress)
+- [ ] Remove `http://2025.therapytaxapp.work` from ALLOWED_ORIGINS after HTTPS works
 
 ---
 
@@ -877,10 +872,11 @@ git push origin main
 - [ ] Report contains all expected data
 
 ### After Phase 2 (2025 Archive)
-- [ ] 2025.therapytaxapp.work resolves
-- [ ] 2025 app loads and works
-- [ ] Google Drive auth works on 2025 subdomain
-- [ ] Year-End Close feature works
+- [x] 2025.therapytaxapp.work resolves
+- [x] 2025 app loads and works
+- [x] Google Drive auth works on 2025 subdomain
+- [ ] Year-End Close feature works (depends on Phase 1)
+- [ ] HTTPS certificate issued
 
 ### After Phase 3 (2026 Updates)
 - [ ] Tax brackets are correct for 2026
@@ -896,10 +892,10 @@ git push origin main
 - [ ] Manual entry still works if report not found
 
 ### After Phase 5 (Deployment)
-- [ ] app.therapytaxapp.work loads 2026 app
-- [ ] 2025.therapytaxapp.work loads 2025 app
-- [ ] Both apps can authenticate with Google
-- [ ] 2026 app can read 2025 final report
+- [x] app.therapytaxapp.work loads 2026 app
+- [x] 2025.therapytaxapp.work loads 2025 app
+- [x] Both apps can authenticate with Google
+- [ ] 2026 app can read 2025 final report (depends on Phase 1 & 4)
 
 ---
 
@@ -914,14 +910,10 @@ If something goes wrong:
 
 ---
 
-## Timeline
+## Next Steps
 
-1. **Phase 1:** Add Year-End Close (~2-3 hours)
-2. **Wait:** User generates 2025 report
-3. **Phase 2:** Create 2025 archive (~30 mins)
-4. **Phase 3:** Update for 2026 (~2-3 hours)
-5. **Phase 4:** Add Prior Year Summary (~2 hours)
-6. **Phase 5:** Deployment and testing (~1 hour)
-
-Total development: ~8 hours
-Total elapsed: depends on when user runs Year-End Close
+1. **Phase 1:** Add Year-End Close feature to 2025 repo
+2. **Wait:** User generates 2025 report using Year-End Close
+3. **Phase 3:** Update this repo (2026 app) with 2026 tax constants
+4. **Phase 4:** Add Prior Year Summary screen to 2026 app
+5. **Cleanup:** Remove http origin from ALLOWED_ORIGINS after HTTPS works
