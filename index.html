@@ -112,6 +112,15 @@
          * @returns {object} { seTax, ssTax, medicareTax, additionalMedicareTax, seTaxDeduction, seTaxBase }
          */
         function calculateSelfEmploymentTax(netIncome) {
+            // Input validation - prevent NaN propagation
+            if (typeof netIncome !== 'number' || isNaN(netIncome)) {
+                console.error('calculateSelfEmploymentTax: Invalid netIncome', netIncome);
+                return {
+                    seTax: 0, ssTax: 0, medicareTax: 0, additionalMedicareTax: 0,
+                    seTaxDeduction: 0, seTaxBase: 0, ssWageBaseCapped: false
+                };
+            }
+
             const seTaxBase = netIncome * SE_TAX_2026.seTaxBaseMultiplier;
 
             // Social Security: 12.4% only up to wage base cap
@@ -149,6 +158,16 @@
          * @returns {object} { qbiDeduction, qbiFromBusiness, qbiFromTaxable, qbiLimited, sstbPhaseOut }
          */
         function calculateQBIDeduction(netBusinessIncome, taxableIncomeBeforeQBI) {
+            // Input validation - prevent NaN propagation
+            if (typeof netBusinessIncome !== 'number' || isNaN(netBusinessIncome) ||
+                typeof taxableIncomeBeforeQBI !== 'number' || isNaN(taxableIncomeBeforeQBI)) {
+                console.error('calculateQBIDeduction: Invalid inputs', { netBusinessIncome, taxableIncomeBeforeQBI });
+                return {
+                    qbiDeduction: 0, qbiFromBusiness: 0, qbiFromTaxable: 0,
+                    qbiLimited: false, sstbPhaseOut: false
+                };
+            }
+
             // QBI doesn't apply if taxable income is zero or negative
             if (taxableIncomeBeforeQBI <= 0 || netBusinessIncome <= 0) {
                 return {
@@ -191,7 +210,12 @@
             }
 
             // QBI deduction is the lesser of the two calculations
-            const qbiDeduction = Math.min(qbiFromBusiness, qbiFromTaxable);
+            let qbiDeduction = Math.min(qbiFromBusiness, qbiFromTaxable);
+
+            // Apply 2026 minimum deduction rule: if QBI >= $1000, deduction cannot be less than $400
+            if (qbiDeduction > 0 && qbiDeduction < QBI_2026.minimumDeduction && netBusinessIncome >= 1000) {
+                qbiDeduction = QBI_2026.minimumDeduction;
+            }
 
             return {
                 qbiDeduction: Math.max(0, qbiDeduction),
@@ -210,7 +234,19 @@
          * @param {number} standardDeduction - Standard deduction amount
          * @returns {object} { incomeTax, taxableIncome, taxableIncomeBeforeQBI, adjustedIncome, qbiDeduction, qbiLimited }
          */
-        function calculateIncomeTax(netIncome, seTaxDeduction, standardDeduction = 15000) {
+        function calculateIncomeTax(netIncome, seTaxDeduction, standardDeduction = 16100) {
+            // Input validation - prevent NaN propagation
+            if (typeof netIncome !== 'number' || isNaN(netIncome) ||
+                typeof seTaxDeduction !== 'number' || isNaN(seTaxDeduction) ||
+                typeof standardDeduction !== 'number' || isNaN(standardDeduction)) {
+                console.error('calculateIncomeTax: Invalid inputs', { netIncome, seTaxDeduction, standardDeduction });
+                return {
+                    incomeTax: 0, taxableIncome: 0, taxableIncomeBeforeQBI: 0,
+                    adjustedIncome: 0, bracketDetails: [], qbiDeduction: 0,
+                    qbiLimited: false, sstbPhaseOut: false
+                };
+            }
+
             const adjustedIncome = netIncome - seTaxDeduction;
             const taxableIncomeBeforeQBI = Math.max(0, adjustedIncome - standardDeduction);
 
@@ -262,7 +298,22 @@
          * @param {number} standardDeduction - Standard deduction amount
          * @returns {object} Complete tax calculation breakdown
          */
-        function calculateTotalTax(grossIncome, businessExpenses = 0, standardDeduction = 15000) {
+        function calculateTotalTax(grossIncome, businessExpenses = 0, standardDeduction = 16100) {
+            // Input validation - prevent NaN propagation
+            if (typeof grossIncome !== 'number' || isNaN(grossIncome) ||
+                typeof businessExpenses !== 'number' || isNaN(businessExpenses) ||
+                typeof standardDeduction !== 'number' || isNaN(standardDeduction)) {
+                console.error('calculateTotalTax: Invalid inputs', { grossIncome, businessExpenses, standardDeduction });
+                return {
+                    grossIncome: 0, businessExpenses: 0, netProfit: 0,
+                    seTax: 0, ssTax: 0, medicareTax: 0, additionalMedicareTax: 0,
+                    seTaxDeduction: 0, seTaxBase: 0, ssWageBaseCapped: false,
+                    incomeTax: 0, taxableIncome: 0, taxableIncomeBeforeQBI: 0,
+                    adjustedIncome: 0, qbiDeduction: 0, qbiLimited: false,
+                    sstbPhaseOut: false, totalTax: 0, bracketDetails: []
+                };
+            }
+
             // Calculate net profit (Schedule C line 31)
             const netProfit = grossIncome - businessExpenses;
 
@@ -312,7 +363,7 @@
                 const weeklyTarget = settings.tax2025Total / 52;
                 return {
                     amount: weeklyTarget,
-                    percentage: (weeklyTarget / weeklyIncome) * 100,
+                    percentage: weeklyIncome > 0 ? (weeklyTarget / weeklyIncome) * 100 : 0,
                     status: 'baseline',
                     explanation: 'First week - using safe harbor baseline',
                     projectedTax: settings.tax2025Total,
@@ -359,7 +410,7 @@
                     status = 'ahead';
                     explanation = `You're ahead of target! No tax savings needed this week.`;
                 } else {
-                    const percentage = (weeklyTarget / weeklyIncome) * 100;
+                    const percentage = weeklyIncome > 0 ? (weeklyTarget / weeklyIncome) * 100 : 0;
                     if (percentage < 25) {
                         status = 'on-track';
                         explanation = `On track - saving ${percentage.toFixed(0)}% this week.`;
@@ -413,17 +464,39 @@
         }
 
         /**
-         * Get current week number
+         * Get current week number for the 2026 tax year
+         * Handles ISO week boundary issues (e.g., Dec 31 might be ISO week 1 of next year)
          */
         function getCurrentWeek() {
-            return getWeekNumber(new Date());
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const isoWeek = getWeekNumber(now);
+
+            // If we're in December 2026 but ISO week says week 1 (of 2027), cap at 52
+            // This handles the edge case where late December belongs to ISO week 1 of next year
+            if (currentYear === 2026 && now.getMonth() === 11 && isoWeek === 1) {
+                return 52;
+            }
+
+            // If we're in January 2027 but ISO week says week 52/53 (of 2026), return 52
+            // This means we're past the 2026 tax year
+            if (currentYear === 2027 && now.getMonth() === 0 && isoWeek > 50) {
+                return 52;
+            }
+
+            return isoWeek;
         }
 
         /**
          * Format date as readable string
          */
         function formatDate(dateString) {
+            if (!dateString) return 'N/A';
             const date = new Date(dateString + 'T00:00:00');
+            if (isNaN(date.getTime())) {
+                console.error('formatDate: Invalid date string', dateString);
+                return 'Invalid Date';
+            }
             return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
         }
 
@@ -431,7 +504,12 @@
          * Get days until a date
          */
         function getDaysUntil(dateString) {
+            if (!dateString) return null;
             const target = new Date(dateString);
+            if (isNaN(target.getTime())) {
+                console.error('getDaysUntil: Invalid date string', dateString);
+                return null;
+            }
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             target.setHours(0, 0, 0, 0);
@@ -610,9 +688,71 @@
             }
         }
 
+        /**
+         * Validate app data structure to prevent corrupted data from crashing the app
+         * @param {object} data - The data to validate
+         * @returns {object} { valid: boolean, errors: string[] }
+         */
+        function validateAppData(data) {
+            const errors = [];
+
+            if (!data || typeof data !== 'object') {
+                return { valid: false, errors: ['Data is not an object'] };
+            }
+
+            // Validate settings
+            if (!data.settings || typeof data.settings !== 'object') {
+                errors.push('Missing or invalid settings object');
+            } else {
+                if (typeof data.settings.standardDeduction !== 'number') {
+                    errors.push('Missing or invalid settings.standardDeduction');
+                }
+                if (typeof data.settings.tax2025Total !== 'number' && data.settings.setupComplete) {
+                    errors.push('Missing or invalid settings.tax2025Total');
+                }
+            }
+
+            // Validate weeks
+            if (!Array.isArray(data.weeks)) {
+                errors.push('weeks is not an array');
+            } else if (data.weeks.length !== 52) {
+                errors.push(`weeks array has ${data.weeks.length} entries, expected 52`);
+            } else {
+                // Spot-check a few weeks for required fields
+                const sampleWeeks = [0, 25, 51];
+                for (const i of sampleWeeks) {
+                    const week = data.weeks[i];
+                    if (!week || typeof week !== 'object') {
+                        errors.push(`Week ${i + 1} is not an object`);
+                    } else if (typeof week.week !== 'number') {
+                        errors.push(`Week ${i + 1} missing week number`);
+                    }
+                }
+            }
+
+            // Validate quarterlyPayments
+            if (!Array.isArray(data.quarterlyPayments)) {
+                errors.push('quarterlyPayments is not an array');
+            } else if (data.quarterlyPayments.length !== 4) {
+                errors.push(`quarterlyPayments has ${data.quarterlyPayments.length} entries, expected 4`);
+            }
+
+            return { valid: errors.length === 0, errors };
+        }
+
         function exportToJSON() {
             const data = loadFromLocalStorage();
-            if (!data) return null;
+            if (!data) {
+                console.error('exportToJSON: No data in localStorage');
+                return null;
+            }
+
+            // Verify data integrity before export
+            const validation = validateAppData(data);
+            if (!validation.valid) {
+                console.warn('exportToJSON: Exporting data with validation warnings:', validation.errors);
+                // Still allow export but log warning - user may need this for recovery
+            }
 
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
@@ -621,6 +761,7 @@
             a.download = `alyx-income-manager-backup-${new Date().toISOString().split('T')[0]}.json`;
             a.click();
             URL.revokeObjectURL(url);
+            return validation.valid;
         }
 
         // ============================================================================
@@ -636,6 +777,7 @@
                         try {
                             const budget = {};
                             const dueDates = {};
+                            const warnings = [];
                             const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
                             results.data.forEach(row => {
@@ -648,11 +790,17 @@
                                 });
 
                                 // Read due day from CSV (default to 1 if not provided or invalid)
-                                const dueDay = parseInt(row.DueDay || 1);
-                                dueDates[expenseName] = (dueDay >= 1 && dueDay <= 31) ? dueDay : 1;
+                                const rawDueDay = row.DueDay;
+                                const dueDay = parseInt(rawDueDay || 1);
+                                if (rawDueDay && (isNaN(dueDay) || dueDay < 1 || dueDay > 31)) {
+                                    warnings.push(`"${expenseName}": Invalid due day "${rawDueDay}" - using day 1`);
+                                    dueDates[expenseName] = 1;
+                                } else {
+                                    dueDates[expenseName] = (dueDay >= 1 && dueDay <= 31) ? dueDay : 1;
+                                }
                             });
 
-                            resolve({ budget, dueDates });
+                            resolve({ budget, dueDates, warnings });
                         } catch (error) {
                             reject(error);
                         }
@@ -859,6 +1007,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 isProcessing: false,
                 pendingOperation: null  // 'push' | 'pull' | null
             });
+            const tokenRefreshPromiseRef = useRef(null); // Deduplication for token refresh requests
 
             // Centralized state update function
             // All sync state changes go through here for consistency
@@ -880,6 +1029,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             // Get access token from Cloudflare Worker
             // Worker handles refresh tokens securely - we just get back a fresh access token
+            // Uses deduplication to prevent multiple simultaneous token requests
             const ensureValidToken = useCallback(async () => {
                 const expiryStr = localStorage.getItem('googleTokenExpiry');
                 const expiry = expiryStr ? parseInt(expiryStr) : 0;
@@ -896,44 +1046,58 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return storedToken;
                 }
 
+                // If a token refresh is already in progress, wait for it
+                if (tokenRefreshPromiseRef.current) {
+                    return tokenRefreshPromiseRef.current;
+                }
+
                 // Need to get fresh token from Worker
-                try {
-                    const response = await fetch(`${AUTH_WORKER_URL}/auth/token`, {
-                        credentials: 'include'  // Send session cookie
-                    });
+                const refreshPromise = (async () => {
+                    try {
+                        const response = await fetch(`${AUTH_WORKER_URL}/auth/token`, {
+                            credentials: 'include'  // Send session cookie
+                        });
 
-                    if (!response.ok) {
-                        const error = await response.json().catch(() => ({}));
+                        if (!response.ok) {
+                            const error = await response.json().catch(() => ({}));
 
-                        if (error.code === 'NO_SESSION' || error.code === 'SESSION_EXPIRED') {
-                            // Session invalid - need to re-authenticate
-                            localStorage.setItem('googleConnected', 'false');
-                            localStorage.removeItem('googleAccessToken');
-                            localStorage.removeItem('googleTokenExpiry');
-                            updateSyncState({
-                                status: 'disconnected',
-                                accessToken: null,
-                                error: 'Session expired. Please reconnect to Google Drive in Settings.'
-                            });
-                            throw new Error('Session expired');
+                            if (error.code === 'NO_SESSION' || error.code === 'SESSION_EXPIRED') {
+                                // Session invalid - need to re-authenticate
+                                localStorage.setItem('googleConnected', 'false');
+                                localStorage.removeItem('googleAccessToken');
+                                localStorage.removeItem('googleTokenExpiry');
+                                updateSyncState({
+                                    status: 'disconnected',
+                                    accessToken: null,
+                                    error: 'Session expired. Please reconnect to Google Drive in Settings.'
+                                });
+                                throw new Error('Session expired');
+                            }
+
+                            throw new Error(error.error || 'Failed to get token');
                         }
 
-                        throw new Error(error.error || 'Failed to get token');
+                        const data = await response.json();
+
+                        // Cache the token
+                        const expiresAt = Date.now() + (data.expires_in * 1000);
+                        localStorage.setItem('googleTokenExpiry', expiresAt.toString());
+                        localStorage.setItem('googleAccessToken', data.access_token);
+
+                        updateSyncState({ accessToken: data.access_token });
+                        return data.access_token;
+                    } catch (error) {
+                        console.error('Token fetch error:', error);
+                        throw error;
+                    } finally {
+                        // Clear the in-flight promise
+                        tokenRefreshPromiseRef.current = null;
                     }
+                })();
 
-                    const data = await response.json();
-
-                    // Cache the token
-                    const expiresAt = Date.now() + (data.expires_in * 1000);
-                    localStorage.setItem('googleTokenExpiry', expiresAt.toString());
-                    localStorage.setItem('googleAccessToken', data.access_token);
-
-                    updateSyncState({ accessToken: data.access_token });
-                    return data.access_token;
-                } catch (error) {
-                    console.error('Token fetch error:', error);
-                    throw error;
-                }
+                // Store the promise for deduplication
+                tokenRefreshPromiseRef.current = refreshPromise;
+                return refreshPromise;
             }, [syncState.accessToken, updateSyncState]);
 
             // Generic Drive API request helper
@@ -1151,13 +1315,15 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         const backup = await downloadFromDrive();
                         if (backup && backup.data) {
                             // Validate data structure before setting
-                            if (backup.data.settings && backup.data.weeks) {
+                            const validation = validateAppData(backup.data);
+                            if (validation.valid) {
                                 setAppData(backup.data);
                                 localStorage.setItem('lastKnownDriveModifiedTime', backup.modifiedTime);
                                 // Record pulled data as synced
                                 lastSyncedDataRef.current = JSON.stringify(backup.data);
                             } else {
-                                throw new Error('Invalid backup data structure');
+                                console.error('Backup validation failed:', validation.errors);
+                                throw new Error('Invalid backup data: ' + validation.errors.join(', '));
                             }
                         }
                     }
@@ -1551,7 +1717,18 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             useEffect(() => {
                 const savedData = loadFromLocalStorage();
 
+                // Validate saved data before using it
                 if (savedData && savedData.settings && savedData.settings.setupComplete) {
+                    const validation = validateAppData(savedData);
+                    if (!validation.valid) {
+                        console.error('Saved data validation failed:', validation.errors);
+                        console.warn('Starting fresh due to corrupted data. Old data preserved in localStorage for recovery.');
+                        // Don't clear localStorage - let user potentially recover data
+                        // Fall through to create initial data
+                    }
+                }
+
+                if (savedData && savedData.settings && savedData.settings.setupComplete && validateAppData(savedData).valid) {
                     let data = savedData;
 
                     // Migration: v1 -> v2 (fix week dates to Friday)
@@ -1611,6 +1788,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             status: 'pending'
                         })),
                         quarterlyPayments: QUARTERLY_DUE_DATES.map(q => ({ ...q, paid: false, datePaid: null })),
+                        // Reserved for future feature: transaction audit trail
+                        // Kept for backwards compatibility with existing localStorage data
                         businessTransactions: [],
                         taxTransactions: []
                     };
@@ -1639,8 +1818,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     };
 
                     // If tax2025Total is being updated, also update quarterly payment amounts
+                    // Using Math.ceil to ensure we don't slightly underpay due to rounding
                     if (newSettings.tax2025Total !== undefined) {
-                        const quarterlyAmount = Math.round(newSettings.tax2025Total / 4);
+                        const quarterlyAmount = Math.ceil(newSettings.tax2025Total / 4);
                         updatedState.quarterlyPayments = prev.quarterlyPayments.map(q => ({
                             ...q,
                             amount: quarterlyAmount
@@ -1652,6 +1832,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             };
 
             const updateWeek = (weekNumber, weekData) => {
+                // Validate week number bounds
+                if (typeof weekNumber !== 'number' || weekNumber < 1 || weekNumber > 52) {
+                    console.error('updateWeek: Invalid week number', weekNumber);
+                    return;
+                }
                 setAppData(prev => ({
                     ...prev,
                     weeks: prev.weeks.map(w =>
@@ -2006,9 +2191,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                 const text = await file.text();
                 try {
-                    const { budget, dueDates: parsedDueDates } = await parseExpenseCSV(text);
+                    const { budget, dueDates: parsedDueDates, warnings } = await parseExpenseCSV(text);
                     setCsvFile(budget);
                     setDueDates(parsedDueDates);
+                    if (warnings && warnings.length > 0) {
+                        alert('CSV imported with warnings:\n\n' + warnings.join('\n'));
+                    }
                 } catch (error) {
                     console.error('Error parsing CSV:', error);
                     alert('Error parsing CSV file. Please check the format.');
@@ -2569,6 +2757,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return;
                 }
 
+                // Upper bound to prevent overflow/precision issues
+                const MAX_WEEKLY_INCOME = 100000; // $100k/week = $5.2M/year
+                if (income > MAX_WEEKLY_INCOME) {
+                    alert(`Income exceeds maximum of $${MAX_WEEKLY_INCOME.toLocaleString()}/week. Please verify the amount.`);
+                    return;
+                }
+
                 if (!currentWeekData) {
                     alert('Week data not found. Please refresh the page.');
                     return;
@@ -2732,6 +2927,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 // Validate income value
                                 if (isNaN(income) || income < 0) {
                                     errorMessages.push(`Row ${index + 2}: Invalid income "${incomeStr}"`);
+                                    return;
+                                }
+
+                                // Upper bound check for income
+                                const MAX_WEEKLY_INCOME = 100000;
+                                if (income > MAX_WEEKLY_INCOME) {
+                                    errorMessages.push(`Row ${index + 2}: Income $${income.toLocaleString()} exceeds maximum of $${MAX_WEEKLY_INCOME.toLocaleString()}/week`);
                                     return;
                                 }
 
@@ -4184,11 +4386,15 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                 const text = await file.text();
                 try {
-                    const { budget, dueDates } = await parseExpenseCSV(text);
+                    const { budget, dueDates, warnings } = await parseExpenseCSV(text);
 
                     // CSV is the source of truth - use due dates from the file
                     updateExpenses(budget, dueDates);
-                    alert('Budget uploaded successfully! ✓');
+                    if (warnings && warnings.length > 0) {
+                        alert('Budget uploaded with warnings:\n\n' + warnings.join('\n'));
+                    } else {
+                        alert('Budget uploaded successfully!');
+                    }
                 } catch (error) {
                     alert('Error parsing CSV file. Please check the format.');
                 }
