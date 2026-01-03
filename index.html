@@ -1901,6 +1901,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         driveStatus={driveStatus}
                         isOnline={isOnline}
                         pendingSync={pendingSync}
+                        syncError={syncError}
                     />
 
                     {storageError && (
@@ -1958,7 +1959,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
         // NAVIGATION COMPONENT
         // ============================================================================
 
-        function Navigation({ currentScreen, setCurrentScreen, driveStatus, isOnline, pendingSync }) {
+        function Navigation({ currentScreen, setCurrentScreen, driveStatus, isOnline, pendingSync, syncError }) {
             const navItems = [
                 { id: 'dashboard', label: 'Dashboard', icon: '📊' },
                 { id: 'history', label: 'History', icon: '📅' },
@@ -1990,8 +1991,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             </div>
 
                             {/* Sync Status Indicator */}
-                            {driveStatus !== 'disconnected' && (
+                            {/* Show when connected OR when there's a session error to warn user */}
+                            {(driveStatus !== 'disconnected' || syncError) && (
                                 <div className="flex items-center gap-2 px-3" title={
+                                    syncError ? syncError :
                                     driveStatus === 'syncing' ? 'Syncing...' :
                                     driveStatus === 'error' ? 'Sync error' :
                                     pendingSync ? 'Changes pending' :
@@ -1999,15 +2002,17 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     'Synced to Google Drive'
                                 }>
                                     <div className={`w-2.5 h-2.5 rounded-full ${
+                                        syncError ? 'bg-red-500' :
                                         driveStatus === 'syncing' ? 'bg-blue-500 animate-pulse' :
                                         driveStatus === 'error' ? 'bg-red-500' :
                                         pendingSync ? 'bg-yellow-500' :
                                         !isOnline ? 'bg-yellow-500' :
                                         'bg-green-500'
                                     }`}></div>
-                                    {(driveStatus === 'syncing' || driveStatus === 'error' || pendingSync || !isOnline) && (
-                                        <span className="text-xs text-gray-500">
-                                            {driveStatus === 'syncing' ? 'Syncing' :
+                                    {(syncError || driveStatus === 'syncing' || driveStatus === 'error' || pendingSync || !isOnline) && (
+                                        <span className={`text-xs ${syncError ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
+                                            {syncError ? 'Disconnected' :
+                                             driveStatus === 'syncing' ? 'Syncing' :
                                              driveStatus === 'error' ? 'Error' :
                                              pendingSync ? 'Pending' :
                                              'Offline'}
