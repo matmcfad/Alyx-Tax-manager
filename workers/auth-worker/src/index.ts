@@ -234,9 +234,18 @@ async function handleToken(request: Request, env: Env): Promise<Response> {
     return corsResponse(request, env, 500, { error: 'Token refresh failed', code: 'REFRESH_ERROR' });
   }
 
+  // Renew session: refresh cookie Max-Age and KV TTL on every successful token request.
+  // This creates a rolling window - active sessions never expire.
+  // Critical for Safari ITP which caps cross-site cookie lifetime to 7 days.
+  await env.TOKENS.put(sessionId, JSON.stringify(tokenData), {
+    expirationTtl: SESSION_MAX_AGE
+  });
+
   return corsResponse(request, env, 200, {
     access_token: tokens.access_token,
     expires_in: tokens.expires_in
+  }, {
+    'Set-Cookie': buildSessionCookie(sessionId, SESSION_MAX_AGE)
   });
 }
 
