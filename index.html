@@ -1916,6 +1916,39 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         </div>
                     )}
 
+                    {/* Mandatory Google Drive connection banner - shows whenever not connected */}
+                    {driveStatus === 'disconnected' && (
+                        <div className={`${syncError ? 'bg-amber-500' : 'bg-red-600'} text-white px-4 py-4`}>
+                            <div className="container mx-auto max-w-4xl flex items-center justify-between gap-4">
+                                <div className="flex items-center gap-3 min-w-0">
+                                    <svg className="w-6 h-6 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        {syncError ? (
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                        ) : (
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        )}
+                                    </svg>
+                                    <div>
+                                        <div className="font-bold text-sm sm:text-base">
+                                            {syncError ? 'Google Drive session expired' : 'Google Drive backup is not connected'}
+                                        </div>
+                                        <div className={`${syncError ? 'text-amber-100' : 'text-red-100'} text-xs sm:text-sm`}>
+                                            {syncError
+                                                ? 'Reconnect to resume automatic backup of your financial data.'
+                                                : 'Your financial data is only stored in this browser. Connect Google Drive to keep it safe.'}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={handleGoogleSignIn}
+                                    className={`bg-white ${syncError ? 'text-amber-600 hover:bg-amber-50' : 'text-red-600 hover:bg-red-50'} px-4 py-2 rounded-lg font-bold text-sm whitespace-nowrap transition-colors flex-shrink-0`}
+                                >
+                                    {syncError ? 'Reconnect' : 'Connect Now'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="container mx-auto px-4 py-6 max-w-4xl">
                         {currentScreen === 'dashboard' && (
                             <Dashboard appData={appData} updateWeek={updateWeek} updateSettings={updateSettings} setCurrentScreen={setCurrentScreen} />
@@ -1990,36 +2023,37 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 ))}
                             </div>
 
-                            {/* Sync Status Indicator */}
-                            {/* Show when connected OR when there's a session error to warn user */}
-                            {(driveStatus !== 'disconnected' || syncError) && (
-                                <div className="flex items-center gap-2 px-3" title={
-                                    syncError ? syncError :
-                                    driveStatus === 'syncing' ? 'Syncing...' :
-                                    driveStatus === 'error' ? 'Sync error' :
-                                    pendingSync ? 'Changes pending' :
-                                    !isOnline ? 'Offline' :
-                                    'Synced to Google Drive'
-                                }>
-                                    <div className={`w-2.5 h-2.5 rounded-full ${
-                                        syncError ? 'bg-red-500' :
-                                        driveStatus === 'syncing' ? 'bg-blue-500 animate-pulse' :
-                                        driveStatus === 'error' ? 'bg-red-500' :
-                                        pendingSync ? 'bg-yellow-500' :
-                                        !isOnline ? 'bg-yellow-500' :
-                                        'bg-green-500'
-                                    }`}></div>
-                                    {(syncError || driveStatus === 'syncing' || driveStatus === 'error' || pendingSync || !isOnline) && (
-                                        <span className={`text-xs ${syncError ? 'text-red-600 font-medium' : 'text-gray-500'}`}>
-                                            {syncError ? 'Disconnected' :
-                                             driveStatus === 'syncing' ? 'Syncing' :
-                                             driveStatus === 'error' ? 'Error' :
-                                             pendingSync ? 'Pending' :
-                                             'Offline'}
-                                        </span>
-                                    )}
-                                </div>
-                            )}
+                            {/* Sync Status Indicator - always visible */}
+                            <div className="flex items-center gap-2 px-3" title={
+                                driveStatus === 'disconnected' ? 'Google Drive not connected' :
+                                syncError ? syncError :
+                                driveStatus === 'syncing' ? 'Syncing...' :
+                                driveStatus === 'error' ? 'Sync error' :
+                                pendingSync ? 'Changes pending' :
+                                !isOnline ? 'Offline' :
+                                'Synced to Google Drive'
+                            }>
+                                <div className={`w-2.5 h-2.5 rounded-full ${
+                                    driveStatus === 'disconnected' ? 'bg-red-500' :
+                                    syncError ? 'bg-red-500' :
+                                    driveStatus === 'syncing' ? 'bg-blue-500 animate-pulse' :
+                                    driveStatus === 'error' ? 'bg-red-500' :
+                                    pendingSync ? 'bg-yellow-500' :
+                                    !isOnline ? 'bg-yellow-500' :
+                                    'bg-green-500'
+                                }`}></div>
+                                <span className={`text-xs hidden sm:inline ${
+                                    driveStatus === 'disconnected' || syncError ? 'text-red-600 font-medium' : 'text-gray-500'
+                                }`}>
+                                    {driveStatus === 'disconnected' ? 'Not backed up' :
+                                     syncError ? 'Disconnected' :
+                                     driveStatus === 'syncing' ? 'Syncing' :
+                                     driveStatus === 'error' ? 'Error' :
+                                     pendingSync ? 'Pending' :
+                                     !isOnline ? 'Offline' :
+                                     'Synced'}
+                                </span>
+                            </div>
                         </div>
                     </div>
                 </nav>
