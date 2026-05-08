@@ -1010,6 +1010,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 pendingOperation: null  // 'push' | 'pull' | null
             });
             const tokenRefreshPromiseRef = useRef(null); // Deduplication for token refresh requests
+            const restoreRanRef = useRef(false); // Ensures the OAuth-callback / session-restore effect runs only once after appData loads
 
             // Centralized state update function
             // All sync state changes go through here for consistency
@@ -1441,8 +1442,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 }
             }, [syncState.accessToken, appData?.settings?.setupComplete, findBackupFile]);
 
-            // Effect: Handle OAuth callback and restore connection on page load
+            // Effect: Handle OAuth callback and restore connection on page load.
+            // Must wait for appData to load: the OAuth success branch is gated on
+            // appData.settings.setupComplete to coordinate with SetupFlow's own
+            // callback handler. Running before appData is loaded would skip the
+            // gate and fall through to the "Normal page load" branch, which
+            // returns early when localStorage.googleConnected is 'false' (the
+            // state left behind by a prior session-expiry), leaving ?auth=success
+            // unhandled and the red banner stuck on screen.
             useEffect(() => {
+                if (!appData) return;
+                if (restoreRanRef.current) return;
+                restoreRanRef.current = true;
+
                 const restore = async () => {
                     // Check for OAuth callback from Worker
                     const urlParams = new URLSearchParams(window.location.search);
@@ -1565,7 +1577,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                 };
 
                 restore();
-            }, [updateSyncState]);
+            }, [updateSyncState, appData]);
 
             // Effect: Online/offline handling
             useEffect(() => {
