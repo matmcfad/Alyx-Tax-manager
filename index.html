@@ -364,7 +364,14 @@
          * @returns {{rate: number, info: object|null}}
          */
         function computeQuarterlyCatchup(nextUnpaid, taxSavingsBalance, referenceDate = null) {
-            if (!nextUnpaid || !(nextUnpaid.amount > 0)) {
+            // Defensive validation — the schedule comes from persisted/restored data
+            // and can be malformed (e.g., a backup from before the periodEnd field
+            // existed). Without these guards, missing fields propagate as NaN through
+            // the date math and out to the UI.
+            if (!nextUnpaid
+                || !(nextUnpaid.amount > 0)
+                || typeof nextUnpaid.periodEnd !== 'string'
+                || typeof nextUnpaid.due !== 'string') {
                 return { rate: 0, info: null };
             }
             const shortfall = Math.max(0, nextUnpaid.amount - taxSavingsBalance);
@@ -379,17 +386,19 @@
 
             let weeksToTarget;
             let targetKind;
-            // daysToPeriodEnd >= 0 means the period ends today or later; period-end
-            // day itself is still a valid savings opportunity.
-            if (daysToPeriodEnd >= 1) {
+            // daysToPeriodEnd >= 0 means the period ends today or later; the period-
+            // end day ITSELF is still a valid savings opportunity (the user could
+            // deposit before midnight). Falling back to due-date pacing too early
+            // would under-pace by one day every quarter.
+            if (daysToPeriodEnd >= 0) {
                 // Strict period-end target. Math.floor rounds DOWN — conservative.
                 weeksToTarget = Math.max(1, Math.floor(daysToPeriodEnd / 7));
                 targetKind = 'period-end';
             } else {
-                // Period closed (or closes today). Fall back to the IRS due date.
+                // Period passed. Fall back to the IRS due date.
                 const dueDateObj = new Date(nextUnpaid.due + 'T00:00:00');
                 const daysToDue = Math.ceil((dueDateObj - refDate) / dayMs);
-                if (daysToDue >= 1) {
+                if (daysToDue >= 0) {
                     weeksToTarget = Math.max(1, Math.floor(daysToDue / 7));
                     targetKind = 'due-date';
                 } else {
@@ -3499,8 +3508,16 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         </div>
                     </div>
 
-                    {/* Quarterly Tax Status */}
-                    {nextQuarterly && (
+                    {/* Quarterly Tax Status. Validate the quarterly object: a restored
+                        backup or partial data update can leave it missing required fields,
+                        which would otherwise propagate as NaN/TypeError through the renders. */}
+                    {nextQuarterly && (!Number.isFinite(nextQuarterly.amount) || !nextQuarterly.periodEnd || !nextQuarterly.due) && (
+                        <div className="bg-red-50 border-2 border-red-500 rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-bold text-red-800 mb-2">⚠️ QUARTERLY DATA ERROR</h2>
+                            <p className="text-red-700">The next quarterly payment ({nextQuarterly.quarter || 'unknown'}) is missing required fields. Please restore from a Google Drive backup or re-enter your settings.</p>
+                        </div>
+                    )}
+                    {nextQuarterly && Number.isFinite(nextQuarterly.amount) && nextQuarterly.periodEnd && nextQuarterly.due && (
                         <div className="bg-white rounded-lg shadow-md p-6">
                             <h2 className="text-xl font-bold text-gray-800 mb-4">📅 QUARTERLY TAX STATUS</h2>
                             <div className="space-y-3">
@@ -3511,12 +3528,24 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 <div>
                                     <span className="text-gray-600">Save by: </span>
                                     <span className="font-semibold">{formatDate(nextQuarterly.periodEnd)}</span>
-                                    <span className="text-sm text-gray-500 ml-2">({daysUntilNextPeriodEnd} days)</span>
+                                    <span className="text-sm text-gray-500 ml-2">
+                                        {daysUntilNextPeriodEnd === null
+                                            ? ''
+                                            : daysUntilNextPeriodEnd >= 0
+                                                ? `(${daysUntilNextPeriodEnd} days)`
+                                                : '(past)'}
+                                    </span>
                                 </div>
                                 <div>
                                     <span className="text-gray-600">Payment due: </span>
                                     <span className="font-semibold">{formatDate(nextQuarterly.due)}</span>
-                                    <span className="text-sm text-gray-500 ml-2">({daysUntilNextPayment} days)</span>
+                                    <span className="text-sm text-gray-500 ml-2">
+                                        {daysUntilNextPayment === null
+                                            ? ''
+                                            : daysUntilNextPayment >= 0
+                                                ? `(${daysUntilNextPayment} days)`
+                                                : `(${Math.abs(daysUntilNextPayment)} days overdue)`}
+                                    </span>
                                 </div>
                                 <div>
                                     <span className="text-gray-600">Amount: </span>
@@ -4276,16 +4305,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     {/* Year-End Projection - Restructured for clarity */}
 
                     {/* Section 1: Next Payment Alert */}
-                    {nextPayment ? (() => {
+                    {nextPayment && Number.isFinite(nextPayment.amount) && nextPayment.amount > 0 && nextPayment.periodEnd && nextPayment.due ? (() => {
                         // "Overdue" is based on the IRS deadline (the due date, e.g. June 15).
                         // Pacing is based on the period end (e.g. May 31), so cash is on hand
                         // before the period closes and the 15-day grace is reserved for paying.
+                        // Boundary: the period-end day itself (daysUntilPeriodEnd === 0) is
+                        // still a valid savings opportunity, so the period hasn't "ended" until
+                        // daysUntilPeriodEnd < 0. Matches computeQuarterlyCatchup's threshold.
                         const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
-                        const pacingDays = daysUntilPeriodEnd !== null && daysUntilPeriodEnd > 0
+                        const pacingDays = daysUntilPeriodEnd !== null && daysUntilPeriodEnd >= 0
                             ? daysUntilPeriodEnd
-                            : (daysUntilDue !== null && daysUntilDue > 0 ? daysUntilDue : 0);
+                            : (daysUntilDue !== null && daysUntilDue >= 0 ? daysUntilDue : 0);
                         const pacingWeeks = Math.max(1, Math.ceil(pacingDays / 7));
-                        const periodHasEnded = daysUntilPeriodEnd !== null && daysUntilPeriodEnd <= 0;
+                        const periodHasEnded = daysUntilPeriodEnd !== null && daysUntilPeriodEnd < 0;
 
                         return (
                             <div className={`rounded-lg shadow-md p-6 border ${
@@ -4362,7 +4394,14 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 </div>
                             </div>
                         );
-                    })() : (
+                    })() : nextPayment ? (
+                        // nextPayment exists but is malformed (missing amount, periodEnd, or due).
+                        // Surface explicitly rather than silently rendering "all complete".
+                        <div className="bg-red-50 border-2 border-red-500 rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-bold text-red-800 mb-2">⚠️ QUARTERLY DATA ERROR</h2>
+                            <p className="text-red-700">The next quarterly payment ({nextPayment.quarter || 'unknown'}) is missing required fields. Please restore from a Google Drive backup or re-enter your settings.</p>
+                        </div>
+                    ) : (
                         <div className="bg-green-50 border-2 border-green-500 rounded-lg shadow-md p-6">
                             <h2 className="text-xl font-bold text-green-800 mb-2">✓ ALL QUARTERLY PAYMENTS COMPLETE</h2>
                             <p className="text-green-700">All four quarterly estimated tax payments have been made for this year.</p>
