@@ -349,17 +349,92 @@
         }
 
         /**
-         * Calculate smart weekly tax savings based on current progress and projections
-         * @param {number} weeklyIncome - This week's income
-         * @param {number} ytdIncome - Year-to-date income
-         * @param {number} weeksElapsed - Number of weeks completed
+         * Compute the weekly catch-up rate for the next unpaid quarterly payment.
+         *
+         * Targets the period END (e.g. May 31) by default — that leaves the 15-day
+         * IRS grace period for actually making the payment. Falls back to the due
+         * date if the period has already passed (user is in the grace window or
+         * overdue). Uses Math.floor for the week count so that the denominator is
+         * smaller, the per-week target is larger, and the user overpays rather
+         * than underpays — per the project's "calculate conservatively" principle.
+         *
+         * @param {object|undefined} nextUnpaid - The next unpaid quarterly object
          * @param {number} taxSavingsBalance - Current tax savings balance
-         * @param {number} quarterlyPaid - Total quarterly payments already made
-         * @param {object} settings - App settings
-         * @param {number} annualBusinessExpenses - Annual business expenses for tax deduction
-         * @returns {object} { amount, percentage, status, explanation }
+         * @param {string|Date|null} referenceDate - "Now" for the calculation
+         * @returns {{rate: number, info: object|null}}
          */
-        function calculateSmartTaxSavings(weeklyIncome, ytdIncome, weeksElapsed, taxSavingsBalance, quarterlyPaid, settings, annualBusinessExpenses = 0) {
+        function computeQuarterlyCatchup(nextUnpaid, taxSavingsBalance, referenceDate = null) {
+            // Defensive validation — the schedule comes from persisted/restored data
+            // and can be malformed (e.g., a backup from before the periodEnd field
+            // existed). Without these guards, missing fields propagate as NaN through
+            // the date math and out to the UI.
+            if (!nextUnpaid
+                || !(nextUnpaid.amount > 0)
+                || typeof nextUnpaid.periodEnd !== 'string'
+                || typeof nextUnpaid.due !== 'string') {
+                return { rate: 0, info: null };
+            }
+            const shortfall = Math.max(0, nextUnpaid.amount - taxSavingsBalance);
+            if (shortfall <= 0) {
+                return { rate: 0, info: null };
+            }
+            const refDate = referenceDate ? new Date(referenceDate) : new Date();
+            refDate.setHours(0, 0, 0, 0);
+            const dayMs = 1000 * 60 * 60 * 24;
+            const periodEndDate = new Date(nextUnpaid.periodEnd + 'T00:00:00');
+            const daysToPeriodEnd = Math.ceil((periodEndDate - refDate) / dayMs);
+
+            let weeksToTarget;
+            let targetKind;
+            // daysToPeriodEnd >= 0 means the period ends today or later; the period-
+            // end day ITSELF is still a valid savings opportunity (the user could
+            // deposit before midnight). Falling back to due-date pacing too early
+            // would under-pace by one day every quarter.
+            if (daysToPeriodEnd >= 0) {
+                // Strict period-end target. Math.floor rounds DOWN — conservative.
+                weeksToTarget = Math.max(1, Math.floor(daysToPeriodEnd / 7));
+                targetKind = 'period-end';
+            } else {
+                // Period passed. Fall back to the IRS due date.
+                const dueDateObj = new Date(nextUnpaid.due + 'T00:00:00');
+                const daysToDue = Math.ceil((dueDateObj - refDate) / dayMs);
+                if (daysToDue >= 0) {
+                    weeksToTarget = Math.max(1, Math.floor(daysToDue / 7));
+                    targetKind = 'due-date';
+                } else {
+                    // Both passed: overdue. Save it all this week.
+                    weeksToTarget = 1;
+                    targetKind = 'overdue';
+                }
+            }
+
+            return {
+                rate: shortfall / weeksToTarget,
+                info: {
+                    quarter: nextUnpaid.quarter,
+                    shortfall,
+                    weeksToTarget,
+                    periodEnd: nextUnpaid.periodEnd,
+                    due: nextUnpaid.due,
+                    amount: nextUnpaid.amount,
+                    targetKind
+                }
+            };
+        }
+
+        /**
+         * Calculate smart weekly tax savings based on current progress and projections.
+         *
+         * The recommendation is the HIGHER of two rates:
+         *   (a) Annual smoothing rate - total remaining liability spread evenly across
+         *       the remaining weeks of the year. Keeps weekly amounts stable.
+         *   (b) Quarterly catch-up rate - see computeQuarterlyCatchup.
+         *
+         * @param {Array} quarterlyPayments - Quarterly payment schedule (pass [] to
+         *   disable catch-up, e.g. for historical simulations where the current paid
+         *   state doesn't reflect what was paid by the reference date)
+         */
+        function calculateSmartTaxSavings(weeklyIncome, ytdIncome, weeksElapsed, taxSavingsBalance, quarterlyPaid, settings, annualBusinessExpenses = 0, quarterlyPayments = [], referenceDate = null) {
             // If it's the very first week, use safe harbor amount as baseline
             if (weeksElapsed === 0) {
                 const weeklyTarget = settings.tax2025Total / 52;
@@ -371,58 +446,78 @@
                     projectedTax: settings.tax2025Total,
                     totalNeeded: settings.tax2025Total,
                     stillNeed: settings.tax2025Total,
-                    weeksRemaining: 52
+                    weeksRemaining: 52,
+                    rateSource: 'annual-smoothing',
+                    annualRate: weeklyTarget,
+                    catchupRate: 0,
+                    catchupInfo: null
                 };
             }
 
-            // Calculate projected annual income based on current pace
             const avgWeekly = ytdIncome / weeksElapsed;
             const projectedAnnual = avgWeekly * 52;
-
-            // Calculate projected 2026 tax (now with business expenses and QBI deduction)
             const projectedTax = calculateTotalTax(projectedAnnual, annualBusinessExpenses, settings.standardDeduction);
 
-            // We need enough to cover the HIGHER of:
-            // 1. Safe harbor (2025 tax) - to avoid penalties
-            // 2. Projected 2026 tax - to avoid owing at tax time
+            // Cover the HIGHER of safe harbor (2025) or projected 2026 tax
             const totalNeeded = Math.max(settings.tax2025Total, projectedTax.totalTax);
-
-            // How much more do we need to save?
-            // Account for both current savings AND quarterly payments already made
             const stillNeed = totalNeeded - (taxSavingsBalance + quarterlyPaid);
-
-            // Weeks remaining (including current week)
             const weeksRemaining = 52 - weeksElapsed;
 
-            // Calculate weekly target
-            let weeklyTarget = 0;
+            // (a) Annual smoothing rate
+            const annualRate = weeksRemaining > 0
+                ? Math.max(0, stillNeed / weeksRemaining)
+                : Math.max(0, stillNeed);
+
+            // (b) Quarterly catch-up rate
+            const nextUnpaid = (quarterlyPayments || []).find(q => !q.paid);
+            const catchup = computeQuarterlyCatchup(nextUnpaid, taxSavingsBalance, referenceDate);
+            const catchupRate = catchup.rate;
+            const catchupInfo = catchup.info;
+
+            // Pick the higher of the two rates
+            const useCatchup = catchupRate > annualRate;
+            let weeklyTarget = useCatchup ? catchupRate : annualRate;
+            const rateSource = useCatchup ? 'quarterly-catchup' : 'annual-smoothing';
+
+            // Determine status / explanation
             let status = 'on-track';
             let explanation = '';
 
-            if (weeksRemaining <= 0) {
-                // End of year
-                weeklyTarget = Math.max(0, stillNeed);
-                status = stillNeed > 0 ? 'behind' : 'complete';
-                explanation = stillNeed > 0 ? 'Final catch-up needed' : 'Year complete!';
-            } else {
-                weeklyTarget = stillNeed / weeksRemaining;
-
-                if (weeklyTarget < 0) {
-                    weeklyTarget = 0;
+            if (weeklyTarget <= 0) {
+                // Nothing to save this week.
+                weeklyTarget = 0;
+                if (weeksRemaining <= 0 && stillNeed <= 0) {
+                    status = 'complete';
+                    explanation = 'Year complete!';
+                } else {
                     status = 'ahead';
                     explanation = `You're ahead of target! No tax savings needed this week.`;
+                }
+            } else {
+                // Categorize by % of income — applies to BOTH catch-up and annual
+                // branches. A small catch-up rate relative to a large income is
+                // still "on track"; we shouldn't paint it red.
+                const percentage = weeklyIncome > 0 ? (weeklyTarget / weeklyIncome) * 100 : 0;
+                if (percentage < 25) status = 'on-track';
+                else if (percentage < 35) status = 'slightly-behind';
+                else status = 'behind';
+
+                if (useCatchup) {
+                    const targetDateStr = catchupInfo.targetKind === 'period-end'
+                        ? catchupInfo.periodEnd
+                        : catchupInfo.due;
+                    const deadlineLabel = catchupInfo.targetKind === 'overdue'
+                        ? `(PAST DUE — ${formatDate(catchupInfo.due)})`
+                        : `by ${formatDate(targetDateStr)}`;
+                    explanation = `Catching up for ${catchupInfo.quarter}: $${Math.round(catchupInfo.shortfall).toLocaleString()} ${deadlineLabel} over ${catchupInfo.weeksToTarget} week${catchupInfo.weeksToTarget === 1 ? '' : 's'}.`;
+                } else if (weeksRemaining <= 0) {
+                    explanation = `Final catch-up needed - save the remaining $${Math.round(stillNeed).toLocaleString()} this week.`;
+                } else if (percentage < 25) {
+                    explanation = `On track - saving ${percentage.toFixed(0)}% this week.`;
+                } else if (percentage < 35) {
+                    explanation = `Slightly behind - need to save ${percentage.toFixed(0)}% this week.`;
                 } else {
-                    const percentage = weeklyIncome > 0 ? (weeklyTarget / weeklyIncome) * 100 : 0;
-                    if (percentage < 25) {
-                        status = 'on-track';
-                        explanation = `On track - saving ${percentage.toFixed(0)}% this week.`;
-                    } else if (percentage < 35) {
-                        status = 'slightly-behind';
-                        explanation = `Slightly behind - need to save ${percentage.toFixed(0)}% this week.`;
-                    } else {
-                        status = 'behind';
-                        explanation = `Behind on taxes - need to save ${percentage.toFixed(0)}% to catch up.`;
-                    }
+                    explanation = `Behind on taxes - need to save ${percentage.toFixed(0)}% to catch up.`;
                 }
             }
 
@@ -434,7 +529,11 @@
                 projectedTax: projectedTax.totalTax,
                 totalNeeded,
                 stillNeed: Math.max(0, stillNeed),
-                weeksRemaining
+                weeksRemaining,
+                rateSource,
+                annualRate,
+                catchupRate,
+                catchupInfo
             };
         }
 
@@ -507,7 +606,12 @@
          */
         function getDaysUntil(dateString) {
             if (!dateString) return null;
-            const target = new Date(dateString);
+            // Parse 'YYYY-MM-DD' as LOCAL midnight (not UTC). new Date('2026-05-31')
+            // alone parses as UTC, which is the previous calendar day in negative-
+            // offset timezones — causing off-by-one disagreements with the
+            // calculateSmartTaxSavings algorithm, which parses these dates locally.
+            const isoDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dateString);
+            const target = isoDateOnly ? new Date(dateString + 'T00:00:00') : new Date(dateString);
             if (isNaN(target.getTime())) {
                 console.error('getDaysUntil: Invalid date string', dateString);
                 return null;
@@ -2794,8 +2898,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
             const projectedTax = calculateTotalTax(projectedAnnual, annualExpenses, appData.settings.standardDeduction);
 
-            // Next quarterly payment
+            // Next quarterly payment - track both period end (savings target) and due date (legal deadline)
             const nextQuarterly = appData.quarterlyPayments.find(q => !q.paid);
+            const daysUntilNextPeriodEnd = nextQuarterly ? getDaysUntil(nextQuarterly.periodEnd) : null;
             const daysUntilNextPayment = nextQuarterly ? getDaysUntil(nextQuarterly.due) : null;
 
             // Missing weeks
@@ -2843,7 +2948,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     taxSavingsBalance,
                     quarterlyPaid,
                     appData.settings,
-                    annualExpenses
+                    annualExpenses,
+                    appData.quarterlyPayments
                 );
 
                 // Cap tax at what's available after business expenses
@@ -3114,7 +3220,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             // Calculate annual business expenses for tax deduction
                             const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
 
-                            // Calculate smart tax for this week (now with business expense deduction)
+                            // Calculate smart tax for this week. Historical simulations
+                            // pass [] for quarterlyPayments because the CURRENT paid/
+                            // unpaid state doesn't reflect what was paid at weekDate,
+                            // and the catch-up math would otherwise target the wrong
+                            // quarter or skip quarters that were unpaid at that time.
+                            // Annual smoothing only here.
                             const smartTax = calculateSmartTaxSavings(
                                 incomeValue,
                                 runningYtdIncome,
@@ -3122,7 +3233,9 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 runningTaxBalance,
                                 quarterlyPaid,
                                 appData.settings,
-                                annualExpenses
+                                annualExpenses,
+                                [],
+                                weekDate
                             );
 
                             // Cap tax at what's available (income - business)
@@ -3298,7 +3411,8 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                 const business = Math.min(rolling4Week.weeklyAmount, incomeValue * 0.5);
                                                 const annualExpenses = calculateAnnualBusinessExpenses(appData.expenses.budget);
 
-                                                const smartTax = calculateSmartTaxSavings(incomeValue, runningYtd, runningWeeks, runningTax, quarterlyPaid, appData.settings, annualExpenses);
+                                                // Historical simulation: pass [] to disable catch-up (see comment at the persisting call site).
+                                                const smartTax = calculateSmartTaxSavings(incomeValue, runningYtd, runningWeeks, runningTax, quarterlyPaid, appData.settings, annualExpenses, [], weekDate);
                                                 // Cap tax at available amount
                                                 const tax = Math.min(smartTax.amount, incomeValue - business);
                                                 totalBusiness += business;
@@ -3394,8 +3508,16 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         </div>
                     </div>
 
-                    {/* Quarterly Tax Status */}
-                    {nextQuarterly && (
+                    {/* Quarterly Tax Status. Validate the quarterly object: a restored
+                        backup or partial data update can leave it missing required fields,
+                        which would otherwise propagate as NaN/TypeError through the renders. */}
+                    {nextQuarterly && (!Number.isFinite(nextQuarterly.amount) || !nextQuarterly.periodEnd || !nextQuarterly.due) && (
+                        <div className="bg-red-50 border-2 border-red-500 rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-bold text-red-800 mb-2">⚠️ QUARTERLY DATA ERROR</h2>
+                            <p className="text-red-700">The next quarterly payment ({nextQuarterly.quarter || 'unknown'}) is missing required fields. Please restore from a Google Drive backup or re-enter your settings.</p>
+                        </div>
+                    )}
+                    {nextQuarterly && Number.isFinite(nextQuarterly.amount) && nextQuarterly.periodEnd && nextQuarterly.due && (
                         <div className="bg-white rounded-lg shadow-md p-6">
                             <h2 className="text-xl font-bold text-gray-800 mb-4">📅 QUARTERLY TAX STATUS</h2>
                             <div className="space-y-3">
@@ -3404,9 +3526,26 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     <span className="font-semibold">{nextQuarterly.quarter}</span>
                                 </div>
                                 <div>
-                                    <span className="text-gray-600">Due: </span>
+                                    <span className="text-gray-600">Save by: </span>
+                                    <span className="font-semibold">{formatDate(nextQuarterly.periodEnd)}</span>
+                                    <span className="text-sm text-gray-500 ml-2">
+                                        {daysUntilNextPeriodEnd === null
+                                            ? ''
+                                            : daysUntilNextPeriodEnd >= 0
+                                                ? `(${daysUntilNextPeriodEnd} days)`
+                                                : '(past)'}
+                                    </span>
+                                </div>
+                                <div>
+                                    <span className="text-gray-600">Payment due: </span>
                                     <span className="font-semibold">{formatDate(nextQuarterly.due)}</span>
-                                    <span className="text-sm text-gray-500 ml-2">({daysUntilNextPayment} days)</span>
+                                    <span className="text-sm text-gray-500 ml-2">
+                                        {daysUntilNextPayment === null
+                                            ? ''
+                                            : daysUntilNextPayment >= 0
+                                                ? `(${daysUntilNextPayment} days)`
+                                                : `(${Math.abs(daysUntilNextPayment)} days overdue)`}
+                                    </span>
                                 </div>
                                 <div>
                                     <span className="text-gray-600">Amount: </span>
@@ -3576,7 +3715,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                             </div>
                                             {calculatedSplit.smartTax.isCapped && (
                                                 <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-                                                    <strong>⚠️ Warning:</strong> Ideally need ${calculatedSplit.smartTax.idealAmount.toFixed(2)} for taxes, but only ${calculatedSplit.tax.toFixed(2)} available after business expenses. Shortfall: ${calculatedSplit.smartTax.shortfall.toFixed(2)} this week.
+                                                    <strong>⚠️ Income too low to fully fund this week.</strong>{' '}
+                                                    {calculatedSplit.smartTax.rateSource === 'quarterly-catchup' && calculatedSplit.smartTax.catchupInfo
+                                                        ? `Catching up for ${calculatedSplit.smartTax.catchupInfo.quarter} calls for $${calculatedSplit.smartTax.idealAmount.toFixed(2)} this week, but only $${calculatedSplit.tax.toFixed(2)} fits after business expenses. Saved $${calculatedSplit.tax.toFixed(2)}; ${calculatedSplit.smartTax.shortfall > 0 ? `$${calculatedSplit.smartTax.shortfall.toFixed(2)} carries forward and will increase next week's catch-up.` : 'no carry-forward.'}`
+                                                        : `Recommended $${calculatedSplit.smartTax.idealAmount.toFixed(2)} but only $${calculatedSplit.tax.toFixed(2)} fits after business expenses. Shortfall $${calculatedSplit.smartTax.shortfall.toFixed(2)} will roll into future weeks.`
+                                                    }
                                                 </div>
                                             )}
                                         </div>
@@ -3605,9 +3748,17 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                     <div className="font-semibold mt-1">• Target (higher of both): ${calculatedSplit.smartTax.totalNeeded.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                                 </div>
                                                 <div className="mt-3">
-                                                    <div className="font-semibold text-gray-700">Still need to save: ${calculatedSplit.smartTax.stillNeed.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
+                                                    <div className="font-semibold text-gray-700">Still need to save (annual): ${calculatedSplit.smartTax.stillNeed.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</div>
                                                     <div className="text-xs text-gray-600 mt-1">
-                                                        Divided by {calculatedSplit.smartTax.weeksRemaining} weeks = ${calculatedSplit.smartTax.amount.toFixed(2)}/week
+                                                        Annual smoothing: ${calculatedSplit.smartTax.stillNeed.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ÷ {calculatedSplit.smartTax.weeksRemaining} weeks = ${calculatedSplit.smartTax.annualRate.toFixed(2)}/week
+                                                    </div>
+                                                    {calculatedSplit.smartTax.catchupInfo && (
+                                                        <div className="text-xs text-gray-600 mt-1">
+                                                            Quarterly catch-up ({calculatedSplit.smartTax.catchupInfo.quarter}): ${Math.round(calculatedSplit.smartTax.catchupInfo.shortfall).toLocaleString()} ÷ {calculatedSplit.smartTax.catchupInfo.weeksToTarget} week{calculatedSplit.smartTax.catchupInfo.weeksToTarget === 1 ? '' : 's'} until {formatDate(calculatedSplit.smartTax.catchupInfo.periodEnd)} = ${calculatedSplit.smartTax.catchupRate.toFixed(2)}/week
+                                                        </div>
+                                                    )}
+                                                    <div className="font-semibold text-xs text-gray-700 mt-2">
+                                                        Using {calculatedSplit.smartTax.rateSource === 'quarterly-catchup' ? 'quarterly catch-up' : 'annual smoothing'} rate (higher): ${calculatedSplit.smartTax.amount.toFixed(2)}/week
                                                     </div>
                                                 </div>
                                                 <div className="mt-3">
@@ -4032,22 +4183,31 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const totalQuarterly = appData.settings.tax2025Total;
             const additionalNeeded = Math.max(0, projectedTax.totalTax - totalQuarterly);
 
-            // New calculations for improved Year-End Projection
-            // Find next unpaid quarterly payment
+            // Next unpaid quarterly. Pace by period END (e.g. May 31), not the IRS
+            // due date (e.g. June 15). The 15-day grace is for making the payment,
+            // not for continuing to save.
             const nextPayment = appData.quarterlyPayments.find(q => !q.paid);
-            const daysUntilNext = nextPayment ? getDaysUntil(nextPayment.due) : null;
+            const daysUntilPeriodEnd = nextPayment ? getDaysUntil(nextPayment.periodEnd) : null;
+            const daysUntilDue = nextPayment ? getDaysUntil(nextPayment.due) : null;
 
-            // Calculate remaining tax obligation (total projected minus what's been paid)
-            const remainingTax = Math.max(0, projectedTax.totalTax - quarterlyPaid);
+            // Use safe-harbor-aware total throughout. "Remaining to Pay" was using
+            // projection only, which made the math visually inconsistent with
+            // "Still Need to Save" (which uses the target). Both now use the target.
+            const totalNeededForYear = Math.max(appData.settings.tax2025Total, projectedTax.totalTax);
+            const remainingTax = Math.max(0, totalNeededForYear - quarterlyPaid);
+            const stillNeeded = Math.max(0, totalNeededForYear - quarterlyPaid - taxSavingsBalance);
 
-            // Calculate what still needs to be saved
-            const stillNeeded = Math.max(0, remainingTax - taxSavingsBalance);
-
-            // Weekly savings guidance
+            // Weekly savings target. Mirror the weekly recommendation algorithm:
+            // max(annual smoothing, quarterly catch-up). Without this, the entry
+            // screen and the Year-End Summary would show different "Weekly target"
+            // numbers when catch-up is active.
             const today = new Date();
+            today.setHours(0, 0, 0, 0);
             const yearEnd = new Date(today.getFullYear(), 11, 31);
             const weeksRemaining = Math.max(1, Math.ceil((yearEnd - today) / (7 * 24 * 60 * 60 * 1000)));
-            const requiredWeeklySavings = stillNeeded / weeksRemaining;
+            const annualRateSummary = stillNeeded / weeksRemaining;
+            const catchupSummary = computeQuarterlyCatchup(nextPayment, taxSavingsBalance);
+            const requiredWeeklySavings = Math.max(annualRateSummary, catchupSummary.rate);
 
             // Next payment coverage status
             const nextPaymentCovered = nextPayment ? taxSavingsBalance >= nextPayment.amount : true;
@@ -4145,8 +4305,19 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     {/* Year-End Projection - Restructured for clarity */}
 
                     {/* Section 1: Next Payment Alert */}
-                    {nextPayment ? (() => {
-                        const isOverdue = daysUntilNext !== null && daysUntilNext < 0;
+                    {nextPayment && Number.isFinite(nextPayment.amount) && nextPayment.amount > 0 && nextPayment.periodEnd && nextPayment.due ? (() => {
+                        // "Overdue" is based on the IRS deadline (the due date, e.g. June 15).
+                        // Pacing is based on the period end (e.g. May 31), so cash is on hand
+                        // before the period closes and the 15-day grace is reserved for paying.
+                        // Boundary: the period-end day itself (daysUntilPeriodEnd === 0) is
+                        // still a valid savings opportunity, so the period hasn't "ended" until
+                        // daysUntilPeriodEnd < 0. Matches computeQuarterlyCatchup's threshold.
+                        const isOverdue = daysUntilDue !== null && daysUntilDue < 0;
+                        const pacingDays = daysUntilPeriodEnd !== null && daysUntilPeriodEnd >= 0
+                            ? daysUntilPeriodEnd
+                            : (daysUntilDue !== null && daysUntilDue >= 0 ? daysUntilDue : 0);
+                        const pacingWeeks = Math.max(1, Math.ceil(pacingDays / 7));
+                        const periodHasEnded = daysUntilPeriodEnd !== null && daysUntilPeriodEnd < 0;
 
                         return (
                             <div className={`rounded-lg shadow-md p-6 border ${
@@ -4165,8 +4336,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                     )}
                                 </div>
 
-                                <div className="text-lg font-semibold text-gray-700 mb-2">
-                                    {nextPayment.quarter} - Due {formatDate(nextPayment.due)}
+                                <div className="text-lg font-semibold text-gray-700 mb-1">
+                                    {nextPayment.quarter}
+                                </div>
+                                <div className="text-sm text-gray-600 mb-3">
+                                    Period ends {formatDate(nextPayment.periodEnd)} · Payment due {formatDate(nextPayment.due)}
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-4 mb-4">
@@ -4201,7 +4375,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                 ${nextPaymentShortfall.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} still needed
                                             </div>
                                             <div className="text-sm mt-1">
-                                                Payment is {Math.abs(daysUntilNext)} days overdue
+                                                Payment is {Math.abs(daysUntilDue)} days overdue
                                             </div>
                                         </div>
                                     ) : (
@@ -4210,14 +4384,24 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                                 ${nextPaymentShortfall.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} to go
                                             </div>
                                             <div className="text-sm mt-1">
-                                                {daysUntilNext} days left ~ ${Math.ceil(nextPaymentShortfall / Math.max(1, Math.ceil(daysUntilNext / 7))).toLocaleString()}/week
+                                                {periodHasEnded
+                                                    ? `Period ended - ${daysUntilDue} days until payment due ~ $${Math.ceil(nextPaymentShortfall / pacingWeeks).toLocaleString()}/week`
+                                                    : `${pacingDays} days until period ends ~ $${Math.ceil(nextPaymentShortfall / pacingWeeks).toLocaleString()}/week`
+                                                }
                                             </div>
                                         </div>
                                     )}
                                 </div>
                             </div>
                         );
-                    })() : (
+                    })() : nextPayment ? (
+                        // nextPayment exists but is malformed (missing amount, periodEnd, or due).
+                        // Surface explicitly rather than silently rendering "all complete".
+                        <div className="bg-red-50 border-2 border-red-500 rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-bold text-red-800 mb-2">⚠️ QUARTERLY DATA ERROR</h2>
+                            <p className="text-red-700">The next quarterly payment ({nextPayment.quarter || 'unknown'}) is missing required fields. Please restore from a Google Drive backup or re-enter your settings.</p>
+                        </div>
+                    ) : (
                         <div className="bg-green-50 border-2 border-green-500 rounded-lg shadow-md p-6">
                             <h2 className="text-xl font-bold text-green-800 mb-2">✓ ALL QUARTERLY PAYMENTS COMPLETE</h2>
                             <p className="text-green-700">All four quarterly estimated tax payments have been made for this year.</p>
@@ -4234,13 +4418,21 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             → Projected annual: ${projectedAnnual.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                         </div>
 
-                        {/* Main tax summary */}
+                        {/* Main tax summary. Math uses totalNeededForYear (target =
+                            max of safe harbor and projection) so the subtractions
+                            add up visually and match what drives the weekly recommendation. */}
                         <div className="space-y-3 mb-4">
                             <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                                <span className="text-gray-700">Total Tax (projected)</span>
+                                <span className="text-gray-700">Total Tax (target)</span>
                                 <span className="text-xl font-bold number-mono">
-                                    ${projectedTax.totalTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    ${totalNeededForYear.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                 </span>
+                            </div>
+                            <div className="text-xs text-gray-500 -mt-1 pl-1">
+                                {totalNeededForYear > projectedTax.totalTax
+                                    ? `Safe harbor (2025 tax) — exceeds 2026 projection of $${projectedTax.totalTax.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                                    : `2026 projection — exceeds safe harbor of $${appData.settings.tax2025Total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                                }
                             </div>
                             <div className="flex justify-between items-center py-2 border-b border-gray-200">
                                 <span className="text-gray-600">Already Paid (quarterly)</span>
