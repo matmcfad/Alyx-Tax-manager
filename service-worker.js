@@ -1,4 +1,4 @@
-const CACHE_NAME = 'alyx-income-manager-2026-v1';
+const CACHE_NAME = 'alyx-income-manager-2026-v2';
 const urlsToCache = [
   './',
   './index.html',
@@ -8,7 +8,7 @@ const urlsToCache = [
   'https://cdn.tailwindcss.com',
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone/babel.min.js',
+  'https://unpkg.com/@babel/standalone@7/babel.min.js',
   'https://unpkg.com/papaparse@5.4.1/papaparse.min.js'
 ];
 
