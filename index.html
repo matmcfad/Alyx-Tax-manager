@@ -18,12 +18,14 @@
     <meta name="apple-mobile-web-app-title" content="Alyx Income">
     <link rel="apple-touch-icon" href="./icon-192.png">
 
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.29.13/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-    <!-- Google OAuth handled by Cloudflare Worker at auth.matmcfad.com -->
+    <!-- Library versions are pinned exactly: a floating @babel/standalone tag once broke the app (blank page).
+         If you change a URL here, change it in service-worker.js too. -->
+    <!-- Google OAuth handled by Cloudflare Worker at auth.therapytaxapp.work -->
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -93,6 +95,10 @@
             isSSTB: true                    // Therapists are SSTB - affects high earners
         };
 
+        // The single tax year this app tracks. Week math and year-end handling key off this.
+        const TAX_YEAR = 2026;
+        const WEEKS_IN_TAX_YEAR = 52;       // 52 Fridays (paydays) fall in 2026: Jan 2 ... Dec 25
+
         const STORAGE_KEY = "alyxIncomeManager2026";
         const STORAGE_VERSION = "1.0";
 
@@ -139,7 +145,12 @@
             }
 
             const seTax = ssTax + medicareTax + additionalMedicareTax;
-            const seTaxDeduction = seTax * 0.5; // Deduct half of SE tax
+
+            // Deductible half of SE tax (Schedule SE line 13 -> Schedule 1 line 15).
+            // This is 50% of the Social Security + regular Medicare portions ONLY.
+            // The 0.9% Additional Medicare Tax (Form 8959) is NOT deductible, so it
+            // must not be included here - including it would understate income tax.
+            const seTaxDeduction = (ssTax + medicareTax) * 0.5;
 
             return {
                 seTax,
@@ -157,13 +168,15 @@
          * For therapists (SSTB), the deduction phases out at higher incomes
          * @param {number} netBusinessIncome - Net profit from business (Schedule C line 31)
          * @param {number} taxableIncomeBeforeQBI - Taxable income before QBI deduction
+         * @param {number} seTaxDeduction - Deductible half of SE tax (reduces QBI)
          * @returns {object} { qbiDeduction, qbiFromBusiness, qbiFromTaxable, qbiLimited, sstbPhaseOut }
          */
-        function calculateQBIDeduction(netBusinessIncome, taxableIncomeBeforeQBI) {
+        function calculateQBIDeduction(netBusinessIncome, taxableIncomeBeforeQBI, seTaxDeduction = 0) {
             // Input validation - prevent NaN propagation
             if (typeof netBusinessIncome !== 'number' || isNaN(netBusinessIncome) ||
-                typeof taxableIncomeBeforeQBI !== 'number' || isNaN(taxableIncomeBeforeQBI)) {
-                console.error('calculateQBIDeduction: Invalid inputs', { netBusinessIncome, taxableIncomeBeforeQBI });
+                typeof taxableIncomeBeforeQBI !== 'number' || isNaN(taxableIncomeBeforeQBI) ||
+                typeof seTaxDeduction !== 'number' || isNaN(seTaxDeduction)) {
+                console.error('calculateQBIDeduction: Invalid inputs', { netBusinessIncome, taxableIncomeBeforeQBI, seTaxDeduction });
                 return {
                     qbiDeduction: 0, qbiFromBusiness: 0, qbiFromTaxable: 0,
                     qbiLimited: false, sstbPhaseOut: false
@@ -195,8 +208,15 @@
                 };
             }
 
+            // Qualified business income is Schedule C net profit REDUCED by the
+            // deductible half of SE tax (Form 8995 instructions). Below the SSTB
+            // threshold this makes no difference to the result, because the
+            // 20%-of-taxable-income limit below is always the smaller number for a
+            // filer whose only income is this business. It matters in the phase-out.
+            const qualifiedBusinessIncome = Math.max(0, netBusinessIncome - seTaxDeduction);
+
             // Calculate base QBI deduction (20% of qualified business income)
-            let qbiFromBusiness = netBusinessIncome * QBI_2026.deductionRate;
+            let qbiFromBusiness = qualifiedBusinessIncome * QBI_2026.deductionRate;
 
             // QBI is also limited to 20% of taxable income (before QBI)
             const qbiFromTaxable = taxableIncomeBeforeQBI * QBI_2026.deductionRate;
@@ -208,7 +228,19 @@
                 const phaseOutRange = phaseOutEnd - threshold;
                 const amountOver = taxableIncomeBeforeQBI - threshold;
                 const reductionRatio = amountOver / phaseOutRange;
-                qbiFromBusiness *= (1 - reductionRatio);
+                const applicablePercentage = 1 - reductionRatio;
+
+                // The phase-out bites TWICE for a practice with no W-2 employees
+                // (Form 8995-A + Schedule A):
+                //   1. SSTB reduction: only (applicable %) of the QBI counts at all.
+                //   2. W-2 wage limit phase-in: the wage limit is $0 with no
+                //      employees, and the same ratio of the excess over that limit
+                //      is taken away again.
+                // Net effect: 20% x QBI x (applicable %)^2.
+                // ASSUMPTION: no W-2 wages paid and no depreciable property (UBIA).
+                // If the practice ever hires employees this needs revisiting - the
+                // result here would then be too LOW a deduction (conservative).
+                qbiFromBusiness *= applicablePercentage * applicablePercentage;
             }
 
             // QBI deduction is the lesser of the two calculations
@@ -253,7 +285,7 @@
             const taxableIncomeBeforeQBI = Math.max(0, adjustedIncome - standardDeduction);
 
             // Calculate QBI deduction (Section 199A)
-            const qbiResult = calculateQBIDeduction(netIncome, taxableIncomeBeforeQBI);
+            const qbiResult = calculateQBIDeduction(netIncome, taxableIncomeBeforeQBI, seTaxDeduction);
 
             // Apply QBI deduction to get final taxable income
             const taxableIncome = Math.max(0, taxableIncomeBeforeQBI - qbiResult.qbiDeduction);
@@ -565,27 +597,44 @@
         }
 
         /**
-         * Get current week number for the 2026 tax year
-         * Handles ISO week boundary issues (e.g., Dec 31 might be ISO week 1 of next year)
+         * Get the current week number (1-52) for the tax year this app tracks.
+         *
+         * Always returns a week that exists in appData.weeks. Two calendar facts
+         * make the raw ISO week number unsafe to use directly:
+         *   - ISO year 2026 has 53 weeks. Dec 28-31, 2026 are ISO week 53, but the
+         *     app only has 52 week slots (week 53's Friday is Jan 1, 2027, which
+         *     is 2027 income). Those days are treated as still being week 52.
+         *   - Once the calendar moves into the next year, the ISO week restarts at
+         *     1. Returning 1 would point the Dashboard back at the first week of
+         *     the tax year. After year end this stays pinned at week 52.
+         *
+         * @param {Date} now - "Now" (injectable for testing)
          */
-        function getCurrentWeek() {
-            const now = new Date();
-            const currentYear = now.getFullYear();
+        function getCurrentWeek(now = new Date()) {
+            const calendarYear = now.getFullYear();
+
+            if (calendarYear > TAX_YEAR) {
+                return WEEKS_IN_TAX_YEAR;
+            }
+            if (calendarYear < TAX_YEAR) {
+                return 1;
+            }
+
             const isoWeek = getWeekNumber(now);
 
-            // If we're in December 2026 but ISO week says week 1 (of 2027), cap at 52
-            // This handles the edge case where late December belongs to ISO week 1 of next year
-            if (currentYear === 2026 && now.getMonth() === 11 && isoWeek === 1) {
-                return 52;
+            // Early January can belong to the last ISO week of the previous year.
+            if (now.getMonth() === 0 && isoWeek > 50) {
+                return 1;
             }
 
-            // If we're in January 2027 but ISO week says week 52/53 (of 2026), return 52
-            // This means we're past the 2026 tax year
-            if (currentYear === 2027 && now.getMonth() === 0 && isoWeek > 50) {
-                return 52;
-            }
+            return Math.min(WEEKS_IN_TAX_YEAR, Math.max(1, isoWeek));
+        }
 
-            return isoWeek;
+        /**
+         * True once the calendar has moved past the tax year this app tracks.
+         */
+        function isTaxYearOver(now = new Date()) {
+            return now.getFullYear() > TAX_YEAR;
         }
 
         /**
@@ -795,6 +844,33 @@
         }
 
         /**
+         * Keep a copy of whatever is currently stored under STORAGE_KEY before it
+         * gets replaced by something the user did not type in (a reset to defaults
+         * after failed validation, or a pull from Google Drive).
+         *
+         * Why: the auto-save effect writes appData to STORAGE_KEY on every change,
+         * so "starting fresh" silently overwrites the old data unless it is moved
+         * aside first. Only the most recent copy per reason is kept, to bound
+         * storage use.
+         *
+         * @param {string} reason - 'invalid-data' | 'before-drive-pull'
+         * @returns {string|null} The key the copy was saved under, or null
+         */
+        function preserveStoredDataCopy(reason) {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return null;
+                const recoveryKey = `${STORAGE_KEY}_recovery_${reason}`;
+                localStorage.setItem(recoveryKey, raw);
+                localStorage.setItem(`${recoveryKey}_savedAt`, new Date().toISOString());
+                return recoveryKey;
+            } catch (error) {
+                console.error('preserveStoredDataCopy: could not save recovery copy', error);
+                return null;
+            }
+        }
+
+        /**
          * Validate app data structure to prevent corrupted data from crashing the app
          * @param {object} data - The data to validate
          * @returns {object} { valid: boolean, errors: string[] }
@@ -810,10 +886,12 @@
             if (!data.settings || typeof data.settings !== 'object') {
                 errors.push('Missing or invalid settings object');
             } else {
-                if (typeof data.settings.standardDeduction !== 'number') {
+                // Number.isFinite rejects NaN/Infinity as well as non-numbers.
+                // (typeof NaN === 'number', so a typeof check lets NaN through.)
+                if (!Number.isFinite(data.settings.standardDeduction)) {
                     errors.push('Missing or invalid settings.standardDeduction');
                 }
-                if (typeof data.settings.tax2025Total !== 'number' && data.settings.setupComplete) {
+                if (!Number.isFinite(data.settings.tax2025Total) && data.settings.setupComplete) {
                     errors.push('Missing or invalid settings.tax2025Total');
                 }
             }
@@ -1410,6 +1488,13 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return;
                 }
 
+                // Never upload data from before setup is finished. That is blank
+                // default data, and uploading it would overwrite the user's real
+                // Drive backup (e.g. after local data was reset).
+                if (operation === 'push' && (!appData || !appData.settings || !appData.settings.setupComplete)) {
+                    return;
+                }
+
                 queue.isProcessing = true;
                 updateSyncState({ status: 'syncing', error: null });
 
@@ -1424,6 +1509,10 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                             // Validate data structure before setting
                             const validation = validateAppData(backup.data);
                             if (validation.valid) {
+                                // The pull replaces everything on this device. Keep a
+                                // copy of the local data first so edits that never
+                                // reached Drive are recoverable.
+                                preserveStoredDataCopy('before-drive-pull');
                                 setAppData(backup.data);
                                 localStorage.setItem('lastKnownDriveModifiedTime', backup.modifiedTime);
                                 // Record pulled data as synced
@@ -1721,6 +1810,11 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     return;
                 }
 
+                // Blank pre-setup data must never be auto-backed-up over a real backup.
+                if (!appData.settings || !appData.settings.setupComplete) {
+                    return;
+                }
+
                 // Check if data actually changed since last sync
                 const currentDataStr = JSON.stringify(appData);
                 if (currentDataStr === lastSyncedDataRef.current) {
@@ -1755,8 +1849,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     const result = await checkForUpdates();
 
                     if (result.hasUpdates) {
-                        // Always use remote data - Drive is the source of truth
+                        // Always use remote data - Drive is the source of truth.
+                        // (A copy of the local data is kept first - see queueSync.)
                         await queueSync('pull');
+                        // Do NOT push here: queueSync in this closure still holds the
+                        // pre-pull appData and would upload it over the newer backup.
+                        return;
                     }
 
                     // Also handle pending sync after restore
@@ -1804,6 +1902,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             const [isSetupComplete, setIsSetupComplete] = useState(false);
             const [setupStep, setSetupStep] = useState(1);
             const [storageError, setStorageError] = useState(null);
+            const [recoveryNotice, setRecoveryNotice] = useState(null);
 
             // Use centralized sync manager
             const syncManager = useSyncManager(appData, setAppData);
@@ -1834,16 +1933,28 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             // Initialize app data
             useEffect(() => {
                 const savedData = loadFromLocalStorage();
+                const hasStoredValue = localStorage.getItem(STORAGE_KEY) !== null;
 
-                // Validate saved data before using it
-                if (savedData && savedData.settings && savedData.settings.setupComplete) {
-                    const validation = validateAppData(savedData);
-                    if (!validation.valid) {
-                        console.error('Saved data validation failed:', validation.errors);
-                        console.warn('Starting fresh due to corrupted data. Old data preserved in localStorage for recovery.');
-                        // Don't clear localStorage - let user potentially recover data
-                        // Fall through to create initial data
+                // Something is stored but it cannot be used: either it is not
+                // parseable JSON (savedData === null) or it is a completed setup
+                // that fails validation. We are about to fall through to default
+                // data, and the auto-save effect below will then OVERWRITE
+                // STORAGE_KEY. Move the old value aside first so it is recoverable,
+                // and tell the user.
+                const storedButUnreadable = hasStoredValue && savedData === null;
+                const storedButInvalid = !!(savedData && savedData.settings && savedData.settings.setupComplete
+                    && !validateAppData(savedData).valid);
+                if (storedButUnreadable || storedButInvalid) {
+                    if (storedButInvalid) {
+                        console.error('Saved data validation failed:', validateAppData(savedData).errors);
                     }
+                    const recoveryKey = preserveStoredDataCopy('invalid-data');
+                    setRecoveryNotice(recoveryKey
+                        ? 'The data saved in this browser could not be read, so the app is starting from setup. '
+                            + 'Nothing was deleted: a copy of the old data was kept in this browser. '
+                            + 'Sign in with Google below to restore your last backup.'
+                        : 'The data saved in this browser could not be read, so the app is starting from setup. '
+                            + 'Sign in with Google below to restore your last backup.');
                 }
 
                 if (savedData && savedData.settings && savedData.settings.setupComplete && validateAppData(savedData).valid) {
@@ -1991,6 +2102,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
             if (!isSetupComplete) {
                 return (
+                    <>
+                    {recoveryNotice && (
+                        <div className="bg-red-600 text-white px-4 py-3 text-center">
+                            <span className="font-medium">⚠️ {recoveryNotice}</span>
+                        </div>
+                    )}
                     <SetupFlow
                         appData={appData}
                         setAppData={setAppData}
@@ -2006,6 +2123,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         setIsSetupComplete={setIsSetupComplete}
                         loadPriorYearReport={loadPriorYearReport}
                     />
+                    </>
                 );
             }
 
@@ -2263,7 +2381,14 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
 
                                 const backupData = await fileResponse.json();
 
+                                // Validate before replacing app state (same check as a normal pull)
+                                const backupValidation = validateAppData(backupData);
+                                if (!backupValidation.valid) {
+                                    throw new Error('The Google Drive backup could not be read (' + backupValidation.errors.join(', ') + ')');
+                                }
+
                                 // Restore the data
+                                localStorage.setItem('lastKnownDriveModifiedTime', data.files[0].modifiedTime);
                                 setAppData(backupData);
                                 setDriveStatus('connected');
                                 setLastSyncTime(new Date());
@@ -3276,6 +3401,12 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <h1 className="text-2xl font-bold text-gray-800">{appData.settings.businessName}</h1>
                         <p className="text-gray-600">Week {currentWeek} of 52 ({currentWeekData ? formatDate(currentWeekData.date) : 'Loading...'})</p>
+                        {isTaxYearOver() && (
+                            <div className="mt-3 p-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-900">
+                                <strong>The {TAX_YEAR} tax year has ended.</strong> This app only tracks {TAX_YEAR} income.
+                                Finish any {TAX_YEAR} weeks that are still missing, but do not enter income received in {TAX_YEAR + 1} here.
+                            </div>
+                        )}
                     </div>
 
                     {/* Missing Weeks Alert */}
@@ -3944,7 +4075,7 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                     )}
 
                     {/* Already recorded */}
-                    {currentWeekData.income !== null && (
+                    {currentWeekData && currentWeekData.income !== null && (
                         <div className="bg-green-50 border-2 border-green-500 rounded-lg p-6">
                             <h2 className="text-xl font-bold text-green-800 mb-4">✅ Week {currentWeek} Already Recorded</h2>
                             <div className="space-y-2">
@@ -4890,10 +5021,25 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
             };
 
             const handleSave = () => {
+                // Both values feed every tax calculation. An empty or non-numeric
+                // field parses to NaN, which would poison the quarterly amounts and
+                // make the saved data fail validation on the next load.
+                const parsedTax2025Total = parseFloat(formData.tax2025Total);
+                const parsedStandardDeduction = parseFloat(formData.standardDeduction);
+
+                if (!Number.isFinite(parsedTax2025Total) || parsedTax2025Total < 0) {
+                    alert('Please enter your 2025 total tax as a number (0 or more). Settings were not saved.');
+                    return;
+                }
+                if (!Number.isFinite(parsedStandardDeduction) || parsedStandardDeduction < 0) {
+                    alert('Please enter the standard deduction as a number (0 or more). Settings were not saved.');
+                    return;
+                }
+
                 updateSettings({
-                    tax2025Total: parseFloat(formData.tax2025Total),
-                    quarterlyPayment: Math.round(parseFloat(formData.tax2025Total) / 4),
-                    standardDeduction: parseFloat(formData.standardDeduction),
+                    tax2025Total: parsedTax2025Total,
+                    quarterlyPayment: Math.round(parsedTax2025Total / 4),
+                    standardDeduction: parsedStandardDeduction,
                     businessName: formData.businessName,
                     startDate: formData.startDate
                 });
@@ -5095,6 +5241,16 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                                 `Do you want to proceed?`
                             );
                             if (!proceed) return;
+                        }
+
+                        // Reject files that are not a backup of THIS app (e.g. a year-end
+                        // report, a CSV export, or a backup from another year's app).
+                        // Importing one would replace all data and then sync to Drive.
+                        const importValidation = validateAppData(data);
+                        if (!importValidation.valid || !data.settings.setupComplete) {
+                            alert('This file is not a valid ' + TAX_YEAR + ' backup, so nothing was imported.\n\n'
+                                + (importValidation.errors.join('\n') || 'Setup was not completed in this backup.'));
+                            return;
                         }
 
                         // Confirm import will overwrite everything

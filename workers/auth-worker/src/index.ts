@@ -2,7 +2,7 @@
  * Alyx Tax Manager - OAuth Authentication Worker
  *
  * Handles Google OAuth flow with proper refresh token management.
- * Deployed to Cloudflare Workers at auth.matmcfad.com
+ * Deployed to Cloudflare Workers at auth.therapytaxapp.work
  */
 
 interface Env {
@@ -28,6 +28,8 @@ interface GoogleTokenResponse {
 
 const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+const OAUTH_STATE_COOKIE = 'oauth_state';
+const OAUTH_STATE_MAX_AGE = 60 * 10; // 10 minutes to complete the Google consent screen
 
 /**
  * Get list of allowed origins from environment
@@ -50,9 +52,13 @@ function getRequestOrigin(request: Request, env: Env): string {
   // For redirects (no Origin header), check Referer
   const referer = request.headers.get('Referer');
   if (referer) {
-    const refererOrigin = new URL(referer).origin;
-    if (allowedOrigins.includes(refererOrigin)) {
-      return refererOrigin;
+    try {
+      const refererOrigin = new URL(referer).origin;
+      if (allowedOrigins.includes(refererOrigin)) {
+        return refererOrigin;
+      }
+    } catch {
+      // Malformed Referer header - ignore it and fall through to the default
     }
   }
 
@@ -110,9 +116,23 @@ function handleLogin(request: Request, env: Env, url: URL): Response {
   authUrl.searchParams.set('scope', GOOGLE_SCOPES);
   authUrl.searchParams.set('access_type', 'offline');
   authUrl.searchParams.set('prompt', 'consent'); // Force consent to get refresh token
-  authUrl.searchParams.set('state', origin); // Pass origin in state for callback
+  // CSRF protection for the OAuth flow. The state carries a random nonce that
+  // is also stored in a short-lived cookie in this browser. The callback only
+  // accepts a response whose state nonce matches the cookie, i.e. a flow that
+  // this same browser started. Without it, someone could send the user a
+  // crafted /auth/callback link carrying THEIR OWN Google authorization code,
+  // and the user's financial data would then be backed up to that person's
+  // Google Drive.
+  const nonce = crypto.randomUUID();
+  authUrl.searchParams.set('state', `${nonce}|${origin}`); // nonce + origin for callback
 
-  return Response.redirect(authUrl.toString(), 302);
+  return new Response(null, {
+    status: 302,
+    headers: {
+      'Location': authUrl.toString(),
+      'Set-Cookie': buildStateCookie(nonce, OAUTH_STATE_MAX_AGE)
+    }
+  });
 }
 
 /**
@@ -122,11 +142,28 @@ function handleLogin(request: Request, env: Env, url: URL): Response {
 async function handleCallback(request: Request, env: Env, url: URL): Promise<Response> {
   const code = url.searchParams.get('code');
   const error = url.searchParams.get('error');
-  const state = url.searchParams.get('state'); // Origin passed from login
+  const state = url.searchParams.get('state') || ''; // "<nonce>|<origin>" from login
+
+  // Split state into the CSRF nonce and the origin to return to
+  const separatorIndex = state.indexOf('|');
+  const stateNonce = separatorIndex >= 0 ? state.slice(0, separatorIndex) : '';
+  const stateOrigin = separatorIndex >= 0 ? state.slice(separatorIndex + 1) : '';
 
   // Validate and use the origin from state, or fall back to first allowed origin
   const allowedOrigins = getAllowedOrigins(env);
-  const redirectOrigin = (state && allowedOrigins.includes(state)) ? state : allowedOrigins[0];
+  const redirectOrigin = allowedOrigins.includes(stateOrigin) ? stateOrigin : allowedOrigins[0];
+
+  // The nonce must match the cookie set by /auth/login in this browser.
+  const cookieNonce = getCookie(request, OAUTH_STATE_COOKIE);
+  if (!stateNonce || !cookieNonce || stateNonce !== cookieNonce) {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        'Location': `${redirectOrigin}?auth=error&message=${encodeURIComponent('Sign-in could not be verified. Please try connecting again.')}`,
+        'Set-Cookie': buildStateCookie('', 0)
+      }
+    });
+  }
 
   if (error) {
     return Response.redirect(`${redirectOrigin}?auth=error&message=${encodeURIComponent(error)}`, 302);
@@ -175,14 +212,11 @@ async function handleCallback(request: Request, env: Env, url: URL): Promise<Res
     expirationTtl: SESSION_MAX_AGE
   });
 
-  // Redirect back to app with session cookie
-  return new Response(null, {
-    status: 302,
-    headers: {
-      'Location': `${redirectOrigin}?auth=success`,
-      'Set-Cookie': buildSessionCookie(sessionId, SESSION_MAX_AGE)
-    }
-  });
+  // Redirect back to app with session cookie (and clear the one-time state cookie)
+  const headers = new Headers({ 'Location': `${redirectOrigin}?auth=success` });
+  headers.append('Set-Cookie', buildSessionCookie(sessionId, SESSION_MAX_AGE));
+  headers.append('Set-Cookie', buildStateCookie('', 0));
+  return new Response(null, { status: 302, headers });
 }
 
 /**
@@ -290,10 +324,34 @@ async function handleStatus(request: Request, env: Env): Promise<Response> {
 
 // Helper functions
 
+function getCookie(request: Request, name: string): string | null {
+  const cookieHeader = request.headers.get('Cookie') || '';
+  for (const part of cookieHeader.split(';')) {
+    const trimmed = part.trim();
+    // Exact name match - "session" must not match "other_session"
+    if (trimmed.startsWith(`${name}=`)) {
+      return trimmed.slice(name.length + 1) || null;
+    }
+  }
+  return null;
+}
+
 function getSessionId(request: Request): string | null {
-  const cookie = request.headers.get('Cookie') || '';
-  const match = cookie.match(/session=([^;]+)/);
-  return match ? match[1] : null;
+  return getCookie(request, 'session');
+}
+
+function buildStateCookie(nonce: string, maxAge: number): string {
+  const parts = [
+    `${OAUTH_STATE_COOKIE}=${nonce}`,
+    'HttpOnly',
+    'Secure',
+    // Lax: sent on the top-level redirect back from Google, never on
+    // cross-site subrequests.
+    'SameSite=Lax',
+    `Max-Age=${maxAge}`,
+    'Path=/auth'
+  ];
+  return parts.join('; ');
 }
 
 function buildSessionCookie(sessionId: string, maxAge: number): string {
