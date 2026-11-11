@@ -311,6 +311,8 @@ No user interaction needed (no popups!)
 |------|---------|
 | `index.html` | All application code (~5,700 lines) |
 | `service-worker.js` | Offline caching |
+| `vendor/` | Pinned copies of React, ReactDOM, Babel standalone, PapaParse |
+| `tests/tax.test.js` | Tests for the tax/date logic, run against the real code in `index.html` |
 | `manifest.json` | PWA metadata |
 | `AUDIT_METHODOLOGY.md` | Lessons learned from the 27% tax error |
 | `audit_report.md` | November 2026 audit: what was fixed, open recommendations, 2027 rollover notes |
@@ -332,10 +334,12 @@ No user interaction needed (no popups!)
 | `saveToLocalStorage()` / `loadFromLocalStorage()` | Persistence |
 | `getCurrentWeek()` | Current week 1-52 for `TAX_YEAR`; never returns a week that has no slot |
 | `preserveStoredDataCopy()` | Keeps a recovery copy before local data is replaced |
+| `recalculateQuarterlyAmounts()` | Quarterly amounts when the prior-year tax changes; never rewrites paid quarters |
 
 ### Deploying a change
 
-- Library `<script>` URLs in `index.html` are pinned to exact versions and must match `CDN_URLS` in `service-worker.js`.
+- **Run `node tests/tax.test.js` before and after any change to tax, week or quarterly-payment logic.** No install needed. Expected values in it are hand-worked from IRS rules; if one fails, work out which side is right before touching the number.
+- React, Babel and PapaParse are served from `vendor/` (version in each filename), not a CDN. The `<script>` tags in `index.html` must match `APP_SHELL_URLS` in `service-worker.js`. Only Tailwind (styling) still comes from a CDN.
 - The service worker serves the app's own files network-first, so a pushed `index.html` reaches the user on the next online load. Bump `CACHE_NAME` only when the list of cached files changes.
 
 ---

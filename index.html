@@ -18,13 +18,16 @@
     <meta name="apple-mobile-web-app-title" content="Alyx Income">
     <link rel="apple-touch-icon" href="./icon-192.png">
 
-    <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone@7.29.13/babel.min.js"></script>
+    <!-- React, Babel and PapaParse are served from this repo (vendor/), not a CDN.
+         A floating CDN version once broke the app (blank page), and local copies
+         also work offline. The version is in each filename. If you change a file
+         here, change APP_SHELL_URLS in service-worker.js too. -->
+    <script src="./vendor/react-18.3.1.production.min.js"></script>
+    <script src="./vendor/react-dom-18.3.1.production.min.js"></script>
+    <script src="./vendor/babel-standalone-7.29.13.min.js"></script>
+    <script src="./vendor/papaparse-5.4.1.min.js"></script>
+    <!-- Tailwind is still loaded from its CDN (styling only - the app's numbers do not depend on it). -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-    <!-- Library versions are pinned exactly: a floating @babel/standalone tag once broke the app (blank page).
-         If you change a URL here, change it in service-worker.js too. -->
     <!-- Google OAuth handled by Cloudflare Worker at auth.therapytaxapp.work -->
     <style>
         body {
@@ -567,6 +570,44 @@
                 catchupRate,
                 catchupInfo
             };
+        }
+
+        /**
+         * Work out the four quarterly payment amounts after the prior-year tax
+         * total (the safe harbor target) is set or changed.
+         *
+         * Quarters already marked paid are HISTORY - that money has left the tax
+         * savings account - so their amounts are never changed. Rewriting them
+         * would silently change the tax savings balance. Whatever is left of the
+         * safe harbor target is spread evenly across the quarters still unpaid,
+         * so the four payments still add up to at least the full target.
+         *
+         * Rounds UP to the next dollar so rounding can never leave the total short.
+         * With no quarters paid yet this is simply total / 4 for each.
+         *
+         * @param {Array} quarterlyPayments - Current quarterly payment schedule
+         * @param {number} priorYearTaxTotal - Safe harbor target (prior-year total tax)
+         * @returns {Array} New quarterly payment schedule
+         */
+        function recalculateQuarterlyAmounts(quarterlyPayments, priorYearTaxTotal) {
+            if (!Array.isArray(quarterlyPayments) || !Number.isFinite(priorYearTaxTotal) || priorYearTaxTotal < 0) {
+                console.error('recalculateQuarterlyAmounts: Invalid inputs', { quarterlyPayments, priorYearTaxTotal });
+                return quarterlyPayments;
+            }
+
+            const paidQuarters = quarterlyPayments.filter(q => q.paid);
+            const unpaidCount = quarterlyPayments.length - paidQuarters.length;
+            if (unpaidCount === 0) {
+                return quarterlyPayments; // Everything is paid - nothing left to adjust
+            }
+
+            const alreadyPaid = paidQuarters.reduce((sum, q) => sum + (q.amount || 0), 0);
+            const remainingTarget = Math.max(0, priorYearTaxTotal - alreadyPaid);
+            const amountPerUnpaidQuarter = Math.ceil(remainingTarget / unpaidCount);
+
+            return quarterlyPayments.map(q => (
+                q.paid ? q : { ...q, amount: amountPerUnpaidQuarter }
+            ));
         }
 
         // ============================================================================
@@ -2046,14 +2087,14 @@ License,1,0,0,0,0,0,95,0,41,0,0,0,200`;
                         settings: { ...prev.settings, ...newSettings }
                     };
 
-                    // If tax2025Total is being updated, also update quarterly payment amounts
-                    // Using Math.ceil to ensure we don't slightly underpay due to rounding
+                    // If tax2025Total is being updated, also update quarterly payment
+                    // amounts - but only for quarters not yet paid (see
+                    // recalculateQuarterlyAmounts).
                     if (newSettings.tax2025Total !== undefined) {
-                        const quarterlyAmount = Math.ceil(newSettings.tax2025Total / 4);
-                        updatedState.quarterlyPayments = prev.quarterlyPayments.map(q => ({
-                            ...q,
-                            amount: quarterlyAmount
-                        }));
+                        updatedState.quarterlyPayments = recalculateQuarterlyAmounts(
+                            prev.quarterlyPayments,
+                            newSettings.tax2025Total
+                        );
                     }
 
                     return updatedState;

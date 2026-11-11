@@ -26,7 +26,7 @@ QBI $15,367, income tax $8,235, total $22,365 - matches the app to the dollar.
 | 9 | QBI in the SSTB phase-out applied the reduction once; with no W-2 wages it applies twice, and QBI was not reduced by the SE tax deduction | Together with #8: tax understated by up to ~$4,700 (peak near $272k net profit). Results are identical below ~$217k net profit and never lower than before |
 | 10 | Service worker was cache-first for `index.html` | A deployed fix never reached the user unless `CACHE_NAME` was also bumped |
 | 11 | Service worker cached PapaParse from unpkg; the page loads it from cdnjs. One failed CDN aborted the whole install | CSV import/export broken offline; offline support all-or-nothing |
-| 12 | React and Babel loaded from floating version tags | Same failure mode as the earlier blank-page incident. Now pinned exactly |
+| 12 | React and Babel loaded from floating version tags | Same failure mode as the earlier blank-page incident. Now pinned (see #16) |
 | 13 | OAuth `state` carried only the return origin (no CSRF nonce) | A crafted `/auth/callback` link could attach the user's session to someone else's Google account, sending backups to their Drive |
 | 14 | Malformed `Referer` crashed the worker (500); session cookie matched by substring | Minor robustness |
 
@@ -37,36 +37,32 @@ Where recovery copies live: `alyxIncomeManager2026_recovery_invalid-data` and
 `wrangler dev`, but the full Google round trip cannot be tested outside production -
 disconnect and reconnect Google Drive once to confirm.
 
-## 3. Recommendations - need a decision, not changed
+| 15 | Editing the 2025 tax in Settings rewrote the amount on quarters already marked paid | The tax savings balance changed retroactively. Paid quarters are now left alone and the remainder is spread over unpaid quarters |
+| 16 | React, Babel and PapaParse loaded from CDNs | Now served from `vendor/` - no CDN dependency for anything the numbers rely on, and they work offline |
+| 17 | No automated tests | `node tests/tax.test.js` runs 19 hand-worked checks against the real code in `index.html` |
 
-Ordered by money at risk.
+## 3. Decisions taken (Nov 2026)
 
-1. **Weeks off cannot be recorded.** Income must be > 0, so a vacation week stays "missing"
-   forever. `weeksElapsed` is the count of *recorded* weeks, so the Dashboard's
-   "weeks remaining" (52 - recorded) is too high after any skipped week and the annual
-   smoothing rate is too low. The Taxes screen computes weeks remaining from the calendar
-   instead, so the two screens can disagree. Suggested: allow $0 weeks, and use one
-   calendar-based helper in both places.
-2. **Safe harbor is assumed to be 100% of 2025 tax.** It is 110% when 2025 AGI exceeded
-   $150,000. Quarterly amounts are fixed at 2025 tax / 4.
-3. **Quarterly payments have no "actual amount paid".** The balance assumes exactly the
-   scheduled amount was paid, and editing the 2025 tax in Settings rewrites the amount on
-   quarters already marked paid.
-4. **The Schedule C deduction is the budget, not actual spending.** If real expenses come in
-   under budget, projected tax is too low.
-5. **Not modelled at all:** state income tax, self-employed health insurance deduction,
-   retirement contributions, other income, credits. The last four make the app conservative;
-   state tax does not. Worth confirming which apply.
-6. **Two-device sync.** A push never checks whether Drive changed since this device last
-   synced, so a stale open tab overwrites newer data from another device. CLAUDE.md says
-   "the user decides" on conflict; the code always takes Drive on connect and local on push.
-7. **No automated tests, and JSX is compiled in the browser on every load** (~3 MB Babel).
-   A precompiled build with vendored libraries plus a small test file for the tax functions
-   would remove the CDN dependency and guard against regressions. Tailwind's play CDN is
-   still a floating, not-for-production dependency.
-8. Minor: session cookie can be `SameSite=Lax` (app and auth share a site); wrangler 3 and a
-   2024 compatibility date are dated; `.claude/settings.local.json` is committed despite
-   `.gitignore`.
+- **Weeks off cannot be recorded** (income must be > 0, and the Dashboard and Taxes screens
+  count remaining weeks differently). The two resulting errors roughly cancel, so this is
+  deferred to the 2027 build: allow $0 weeks and use one calendar-based week count.
+- **Safe harbor at 100% of prior-year tax** is correct: AGI is under $150,000. Revisit if
+  that changes (110% applies above it).
+- **No "actual amount paid" on quarterly payments** - accepted. The app assumes the
+  scheduled amount was paid.
+- **Schedule C deduction uses the budget, not actual spending** - accepted.
+- **No state income tax** (Washington). Washington B&O tax is not modelled; believed not
+  to apply at current gross receipts - confirm the threshold with the Department of
+  Revenue if income grows.
+- **Two-device sync conflicts** - accepted. The app is used from one computer, and a
+  recovery copy is now kept before any Drive pull.
+- **No precompiled build** - JSX is still compiled in the browser. Tailwind is still a
+  floating CDN script (styling only).
+- Not modelled, all conservative: self-employed health insurance deduction, retirement
+  contributions, credits.
+- Minor, open: session cookie could be `SameSite=Lax`; wrangler 3 and a 2024
+  compatibility date are dated; `.claude/settings.local.json` is committed despite
+  `.gitignore`.
 
 ## 4. 2027 rollover
 

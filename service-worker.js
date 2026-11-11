@@ -1,23 +1,23 @@
 // Bump this whenever the list of cached files changes.
-const CACHE_NAME = 'alyx-income-manager-2026-v3';
+const CACHE_NAME = 'alyx-income-manager-2026-v4';
 
-// The app's own files. These MUST all cache or the install fails.
+// The app's own files, including the libraries in vendor/. These MUST all cache
+// or the install fails. They must match the <script> tags in index.html.
 const APP_SHELL_URLS = [
   './',
   './index.html',
   './manifest.json',
   './icon-192.png',
-  './icon-512.png'
+  './icon-512.png',
+  './vendor/react-18.3.1.production.min.js',
+  './vendor/react-dom-18.3.1.production.min.js',
+  './vendor/babel-standalone-7.29.13.min.js',
+  './vendor/papaparse-5.4.1.min.js'
 ];
 
-// Third-party libraries. These URLs must match the <script> tags in index.html
-// exactly, or the cached copy is never used and the app breaks offline.
+// Third-party files still loaded from a CDN (styling only).
 const CDN_URLS = [
-  'https://cdn.tailwindcss.com',
-  'https://unpkg.com/react@18.3.1/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone@7.29.13/babel.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js'
+  'https://cdn.tailwindcss.com'
 ];
 
 // How long to wait for the network before showing the cached app instead.
@@ -29,9 +29,9 @@ self.addEventListener('install', event => {
     caches.open(CACHE_NAME).then(async cache => {
       await cache.addAll(APP_SHELL_URLS);
 
-      // Cache each library on its own. One CDN being briefly unreachable should
-      // not stop the app itself from being installed for offline use; a library
-      // that failed here is cached later, the first time the page loads it.
+      // A CDN being briefly unreachable should not stop the app itself from
+      // being installed for offline use; a file that failed here is cached
+      // later, the first time the page loads it.
       await Promise.all(CDN_URLS.map(url =>
         cache.add(url).catch(error => {
           console.warn('Could not pre-cache', url, error);
@@ -102,8 +102,7 @@ async function networkFirst(request) {
 }
 
 /**
- * Third-party libraries: the URLs are version-pinned, so their content never
- * changes. Serve from cache, and cache on first use if not there yet.
+ * CDN files: serve from cache, and cache on first use if not there yet.
  */
 async function cacheFirst(request) {
   const cached = await caches.match(request);
@@ -135,7 +134,7 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Only the libraries listed above are cached. Everything else cross-origin
+  // Only the CDN files listed above are cached. Everything else cross-origin
   // (Google Drive API, the auth worker) always goes straight to the network.
   if (CDN_URLS.some(cdnUrl => request.url === cdnUrl || request.url.startsWith(cdnUrl + '/'))) {
     event.respondWith(cacheFirst(request));
