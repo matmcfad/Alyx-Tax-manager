@@ -29,6 +29,9 @@ QBI $15,367, income tax $8,235, total $22,365 - matches the app to the dollar.
 | 12 | React and Babel loaded from floating version tags | Same failure mode as the earlier blank-page incident. Now pinned (see #16) |
 | 13 | OAuth `state` carried only the return origin (no CSRF nonce) | A crafted `/auth/callback` link could attach the user's session to someone else's Google account, sending backups to their Drive |
 | 14 | Malformed `Referer` crashed the worker (500); session cookie matched by substring | Minor robustness |
+| 15 | Editing the 2025 tax in Settings rewrote the amount on quarters already marked paid | The tax savings balance changed retroactively. Paid quarters are now left alone and the remainder is spread over unpaid quarters |
+| 16 | React, Babel and PapaParse loaded from CDNs | Now served from `vendor/` - no CDN dependency for anything the numbers rely on, and they work offline |
+| 17 | No automated tests | `node tests/tax.test.js` runs 19 hand-worked checks against the real code in `index.html` |
 
 Where recovery copies live: `alyxIncomeManager2026_recovery_invalid-data` and
 `alyxIncomeManager2026_recovery_before-drive-pull` in localStorage (latest copy of each).
@@ -37,9 +40,6 @@ Where recovery copies live: `alyxIncomeManager2026_recovery_invalid-data` and
 `wrangler dev`, but the full Google round trip cannot be tested outside production -
 disconnect and reconnect Google Drive once to confirm.
 
-| 15 | Editing the 2025 tax in Settings rewrote the amount on quarters already marked paid | The tax savings balance changed retroactively. Paid quarters are now left alone and the remainder is spread over unpaid quarters |
-| 16 | React, Babel and PapaParse loaded from CDNs | Now served from `vendor/` - no CDN dependency for anything the numbers rely on, and they work offline |
-| 17 | No automated tests | `node tests/tax.test.js` runs 19 hand-worked checks against the real code in `index.html` |
 
 ## 3. Decisions taken (Nov 2026)
 
