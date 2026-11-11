@@ -1,25 +1,43 @@
-const CACHE_NAME = 'alyx-income-manager-2026-v2';
-const urlsToCache = [
+// Bump this whenever the list of cached files changes.
+const CACHE_NAME = 'alyx-income-manager-2026-v4';
+
+// The app's own files, including the libraries in vendor/. These MUST all cache
+// or the install fails. They must match the <script> tags in index.html.
+const APP_SHELL_URLS = [
   './',
   './index.html',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
-  'https://cdn.tailwindcss.com',
-  'https://unpkg.com/react@18/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-  'https://unpkg.com/@babel/standalone@7/babel.min.js',
-  'https://unpkg.com/papaparse@5.4.1/papaparse.min.js'
+  './vendor/react-18.3.1.production.min.js',
+  './vendor/react-dom-18.3.1.production.min.js',
+  './vendor/babel-standalone-7.29.13.min.js',
+  './vendor/papaparse-5.4.1.min.js'
 ];
+
+// Third-party files still loaded from a CDN (styling only).
+const CDN_URLS = [
+  'https://cdn.tailwindcss.com'
+];
+
+// How long to wait for the network before showing the cached app instead.
+const NETWORK_TIMEOUT_MS = 4000;
 
 // Install event - cache resources
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => {
-        console.log('Opened cache');
-        return cache.addAll(urlsToCache);
-      })
+    caches.open(CACHE_NAME).then(async cache => {
+      await cache.addAll(APP_SHELL_URLS);
+
+      // A CDN being briefly unreachable should not stop the app itself from
+      // being installed for offline use; a file that failed here is cached
+      // later, the first time the page loads it.
+      await Promise.all(CDN_URLS.map(url =>
+        cache.add(url).catch(error => {
+          console.warn('Could not pre-cache', url, error);
+        })
+      ));
+    })
   );
   // Force the waiting service worker to become the active service worker
   self.skipWaiting();
@@ -28,50 +46,97 @@ self.addEventListener('install', event => {
 // Activate event - clean up old caches
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(cacheNames => {
-      return Promise.all(
+    caches.keys()
+      .then(cacheNames => Promise.all(
         cacheNames.map(cacheName => {
           if (cacheName !== CACHE_NAME) {
             console.log('Deleting old cache:', cacheName);
             return caches.delete(cacheName);
           }
         })
-      );
-    })
+      ))
+      // Take control of all pages immediately
+      .then(() => self.clients.claim())
   );
-  // Take control of all pages immediately
-  return self.clients.claim();
 });
 
-// Fetch event - serve from cache, fall back to network
+/**
+ * The app's own files: try the network first so a newly deployed version (for
+ * example a tax-calculation fix) reaches the user on the next load, and fall
+ * back to the cached copy when offline or when the network is too slow.
+ *
+ * Cache-first was used here before. It meant index.html was served from the
+ * cache forever, and a fix only reached the user if CACHE_NAME was also bumped.
+ */
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+
+  const fromNetwork = fetch(request).then(response => {
+    if (response && response.status === 200) {
+      cache.put(request, response.clone());
+    }
+    return response;
+  });
+
+  const timeout = new Promise(resolve => setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS));
+
+  try {
+    const response = await Promise.race([fromNetwork, timeout]);
+    if (response) {
+      return response;
+    }
+  } catch (error) {
+    // Offline - fall through to the cache
+  }
+
+  // ignoreSearch: the OAuth redirect lands on /?auth=success
+  const cached = await cache.match(request, { ignoreSearch: true });
+  if (cached) {
+    // Do not leave a rejected network promise unhandled
+    fromNetwork.catch(() => {});
+    return cached;
+  }
+
+  // Nothing cached: wait for the network however long it takes
+  return fromNetwork;
+}
+
+/**
+ * CDN files: serve from cache, and cache on first use if not there yet.
+ */
+async function cacheFirst(request) {
+  const cached = await caches.match(request);
+  if (cached) {
+    return cached;
+  }
+
+  const response = await fetch(request);
+  // 'opaque' = a cross-origin <script> without the crossorigin attribute. Its
+  // status is not readable, but it is still usable as a cached script.
+  if (response && (response.status === 200 || response.type === 'opaque')) {
+    const cache = await caches.open(CACHE_NAME);
+    cache.put(request, response.clone());
+  }
+  return response;
+}
+
 self.addEventListener('fetch', event => {
-  event.respondWith(
-    caches.match(event.request)
-      .then(response => {
-        // Cache hit - return response
-        if (response) {
-          return response;
-        }
+  const request = event.request;
 
-        // Clone the request
-        const fetchRequest = event.request.clone();
+  if (request.method !== 'GET') {
+    return;
+  }
 
-        return fetch(fetchRequest).then(response => {
-          // Check if valid response
-          if (!response || response.status !== 200 || response.type !== 'basic') {
-            return response;
-          }
+  const url = new URL(request.url);
 
-          // Clone the response
-          const responseToCache = response.clone();
+  if (url.origin === self.location.origin) {
+    event.respondWith(networkFirst(request));
+    return;
+  }
 
-          caches.open(CACHE_NAME)
-            .then(cache => {
-              cache.put(event.request, responseToCache);
-            });
-
-          return response;
-        });
-      })
-  );
+  // Only the CDN files listed above are cached. Everything else cross-origin
+  // (Google Drive API, the auth worker) always goes straight to the network.
+  if (CDN_URLS.some(cdnUrl => request.url === cdnUrl || request.url.startsWith(cdnUrl + '/'))) {
+    event.respondWith(cacheFirst(request));
+  }
 });
